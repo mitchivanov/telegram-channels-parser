@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+aiokafka
+minio
+pydantic
+python-dotenv
+asyncpg
+sqlalchemy[asyncio]
+alembic 
