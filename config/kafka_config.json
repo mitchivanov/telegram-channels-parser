@@ -1,4 +1,0 @@
-{
-  "bootstrap_servers": "kafka:9092",
-  "topic": "new_posts"
-} 

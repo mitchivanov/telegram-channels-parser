@@ -19,44 +19,37 @@ services:
       - "9092:9092"
     volumes:
       - kafka_data:/bitnami/kafka
+    healthcheck:
+      test: ["CMD", "kafka-topics.sh", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   redis:
     image: redis:7
     ports:
       - "6379:6379"
 
-  minio:
-    image: minio/minio:latest
-    environment:
-      - MINIO_ROOT_USER=minioadmin
-      - MINIO_ROOT_PASSWORD=minioadmin123
-    command: server /data --console-address ":9001"
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    volumes:
-      - minio_data:/data
-
   parser:
     build: ./parser
     volumes:
-      - ./config:/app/config
+      - parser_session:/app/session
+      - parser_temp:/app/temp
     depends_on:
-      - kafka
-      - redis
-      - minio
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    env_file:
+      - .env
     environment:
       - TELEGRAM_CONFIG=/app/config/telegram_config.json
       - KAFKA_CONFIG=/app/config/kafka_config.json
       - REDIS_URL=redis://redis:6379/0
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=minioadmin
-      - MINIO_SECRET_KEY=minioadmin123
-      - MINIO_BUCKET=parser-media
     restart: unless-stopped
 
   notifications-bot:
-    build: ./bot
+    build: ./notifications-bot
     depends_on:
       - redis
     environment:
@@ -65,6 +58,98 @@ services:
       - ADMIN_IDS=${ADMIN_IDS}
     restart: unless-stopped
 
+  filter-backend:
+    build:
+      context: ./filter
+      dockerfile: Dockerfile
+    container_name: filter-backend
+    env_file:
+      - ./filter/.env
+    environment:
+      - CHANNEL1_ID=${CHANNEL1_ID}
+      - CHANNEL2_ID=${CHANNEL2_ID}
+      - CHANNEL3_ID=${CHANNEL3_ID}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - kafka
+      - redis
+      - db
+    restart: unless-stopped
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
+    volumes:
+      - ./filter:/app
+
+  filter-worker:
+    build:
+      context: ./filter
+      dockerfile: Dockerfile
+    container_name: filter-worker
+    env_file:
+      - ./filter/.env
+    environment:
+      - CHANNEL1_ID=${CHANNEL1_ID}
+      - CHANNEL2_ID=${CHANNEL2_ID}
+      - CHANNEL3_ID=${CHANNEL3_ID}
+    depends_on:
+      - kafka
+      - redis
+      - db
+    restart: unless-stopped
+    command: python kafka_worker.py
+    volumes:
+      - ./filter:/app
+
+  filter-frontend:
+    build:
+      context: ./filter/frontend
+      dockerfile: Dockerfile
+    container_name: filter-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - filter-backend
+    restart: unless-stopped
+
+  channels-bot:
+    build:
+      context: ./channels-bot
+    container_name: channels-bot
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - KAFKA_TOPICS=channel1_posts,channel2_posts,channel3_posts
+      - CHANNEL1_ID=${CHANNEL1_ID}
+      - CHANNEL2_ID=${CHANNEL2_ID}
+      - CHANNEL3_ID=${CHANNEL3_ID}
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:15
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=filter
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+  kafdrop:
+    image: obsidiandynamics/kafdrop
+    restart: unless-stopped
+    ports:
+      - "9002:9000"
+    environment:
+      KAFKA_BROKERCONNECT: "kafka:9092"
+    depends_on:
+      - kafka
+
 volumes:
   kafka_data:
-  minio_data: 
+  db_data:
+  parser_session:
+  parser_temp:

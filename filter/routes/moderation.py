@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from ..db import SessionLocal
-from ..models import ModerationQueue
-from ..schemas import ModerationPost, PostIn
+from db import SessionLocal
+from models import ModerationQueue
+from schemas import ModerationPost, PostIn
 from typing import List
 import json as pyjson
 

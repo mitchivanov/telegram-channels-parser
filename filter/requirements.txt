@@ -5,5 +5,4 @@ minio
 pydantic
 python-dotenv
 asyncpg
-sqlalchemy[asyncio]
-alembic 
+sqlalchemy[asyncio] 
