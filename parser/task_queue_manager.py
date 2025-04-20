@@ -2,10 +2,11 @@ import asyncio
 import logging
 import os
 import math
+import time
 
 class TaskQueueManager:
     def __init__(self, num_workers=5, task_timeout=300, max_retries=3, retry_base_delay=2):
-        self.queue = asyncio.Queue()
+        self.queue = asyncio.Queue(maxsize=1000)  # Увеличиваем максимальный размер очереди с бесконечного на 1000
         self.num_workers = num_workers
         self.workers = []
         self.logger = logging.getLogger("parser.task_queue")
@@ -13,6 +14,9 @@ class TaskQueueManager:
         self.task_timeout = int(os.environ.get("TASK_QUEUE_TASK_TIMEOUT", task_timeout))
         self.max_retries = int(os.environ.get("TASK_QUEUE_MAX_RETRIES", max_retries))
         self.retry_base_delay = float(os.environ.get("TASK_QUEUE_RETRY_BASE_DELAY", retry_base_delay))
+        self.last_queue_status_time = 0
+        self.pending_tasks = 0
+        self.completed_tasks = 0
 
     async def start(self):
         self.running = True
@@ -20,6 +24,8 @@ class TaskQueueManager:
         for i in range(self.num_workers):
             worker = asyncio.create_task(self.worker_loop(i))
             self.workers.append(worker)
+        # Запускаем мониторинг очереди
+        asyncio.create_task(self.queue_monitor())
 
     async def stop(self):
         self.running = False
@@ -31,22 +37,53 @@ class TaskQueueManager:
         self.workers = []
 
     async def add_task(self, task):
-        await self.queue.put(task)
-        self.logger.debug(f"[QUEUE] Задача добавлена: {task.get('type')}")
+        try:
+            # Используем неблокирующую версию, чтобы не зависать при заполненной очереди
+            self.queue.put_nowait(task)
+            self.pending_tasks += 1
+            self.logger.debug(f"[QUEUE] Задача добавлена: {task.get('type')} (в очереди: {self.queue.qsize()})")
+        except asyncio.QueueFull:
+            self.logger.warning(f"[QUEUE] Очередь переполнена! Задача отброшена: {task.get('type')}")
+            # Можно добавить логику для обработки переполнения очереди
+
+    def get_queue_size(self):
+        return self.queue.qsize()
+
+    def get_stats(self):
+        return {
+            "queue_size": self.queue.qsize(),
+            "pending_tasks": self.pending_tasks,
+            "completed_tasks": self.completed_tasks,
+            "workers": self.num_workers
+        }
+
+    async def queue_monitor(self):
+        """Периодически логирует состояние очереди"""
+        while self.running:
+            size = self.queue.qsize()
+            if size > 10 or (time.time() - self.last_queue_status_time) > 60:
+                self.logger.info(f"[QUEUE] Статистика очереди: {size} задач в очереди, {self.completed_tasks} выполнено, {self.pending_tasks} поступило")
+                self.last_queue_status_time = time.time()
+            await asyncio.sleep(10)
 
     async def worker_loop(self, worker_id):
         self.logger.info(f"[QUEUE] Воркeр {worker_id} запущен")
         while self.running:
-            task = await self.queue.get()
-            if task is None:
-                self.logger.info(f"[QUEUE] Воркeр {worker_id} завершает работу")
-                break
             try:
-                await self.handle_with_retry(task, worker_id)
-            except Exception as e:
-                self.logger.error(f"[QUEUE] Неожиданная ошибка в воркере {worker_id}: {e}")
-            finally:
-                self.queue.task_done()
+                task = await asyncio.wait_for(self.queue.get(), timeout=60)  # Добавляем таймаут для проверки alive
+                if task is None:
+                    self.logger.info(f"[QUEUE] Воркeр {worker_id} завершает работу")
+                    break
+                try:
+                    await self.handle_with_retry(task, worker_id)
+                    self.completed_tasks += 1
+                except Exception as e:
+                    self.logger.error(f"[QUEUE] Неожиданная ошибка в воркере {worker_id}: {e}")
+                finally:
+                    self.queue.task_done()
+            except asyncio.TimeoutError:
+                # Периодическая проверка для предотвращения блокировки
+                self.logger.debug(f"[QUEUE] Воркер {worker_id} жив, ожидание задач...")
 
     async def handle_with_retry(self, task, worker_id):
         task_type = task.get('type')

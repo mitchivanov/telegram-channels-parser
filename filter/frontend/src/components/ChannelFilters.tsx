@@ -43,7 +43,7 @@ const ChannelFilters: React.FC<Props> = ({ channels, onSave }) => {
         return (
           <Card key={channel.id}>
             <CardContent>
-              <Typography variant="h6">Канал: {channelNames[String(channel.id)] || `Канал #${channel.id}`}</Typography>
+              <Typography variant="h6">Канал: {channelNames[channel.name] || `Канал ${channel.name}`}</Typography>
               {filter ? (
                 <>
                   <Box mb={1}>

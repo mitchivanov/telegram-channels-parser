@@ -5,4 +5,5 @@ minio
 pydantic
 python-dotenv
 asyncpg
-sqlalchemy[asyncio] 
+sqlalchemy[asyncio]
+redis>=4.2.0

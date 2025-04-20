@@ -1,0 +1,5 @@
+aiogram
+aiokafka
+python-dotenv
+minio
+redis>=4.2.0

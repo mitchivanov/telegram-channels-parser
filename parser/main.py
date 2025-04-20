@@ -1,7 +1,8 @@
 import asyncio
 import os
 import tempfile
-from state import StateManager
+from postgres_state import PostgresStateManager
+from db_models import init_db_schema
 from rate_limiter import RateLimiter
 from floodwait_manager import FloodWaitManager
 from kafka_producer import KafkaProducerAsync
@@ -21,6 +22,9 @@ from minio.error import S3Error
 import json
 import traceback
 from task_queue_manager import TaskQueueManager
+import secrets
+import glob
+import time
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -48,8 +52,8 @@ class GlobalFloodWaitManager:
             await asyncio.sleep(min(left, 5))
 
 class ParserCore:
-    def __init__(self):
-        self.state = StateManager()
+    def __init__(self, state_manager):
+        self.state = state_manager
         self.rate_limiter = RateLimiter(requests_per_minute=40)
         self.floodwait = FloodWaitManager()
         self.global_floodwait = GlobalFloodWaitManager()
@@ -248,7 +252,7 @@ class ParserCore:
     async def run(self):
         semaphore = asyncio.Semaphore(self.max_concurrent)
         self.logger.info(f"Запуск цикла обработки каналов, всего каналов: {len(self.channels)}")
-        batch_size = 1
+        batch_size = 10
         idx = 0
         batch_counter = 1
         total_processed_channels = 0
@@ -303,42 +307,158 @@ class ParserCore:
                 await asyncio.sleep(10)
 
     async def process_message_handler(self, task):
+        if task.get("type") == "process_album":
+            channel = task["channel"]
+            msgs = task["messages"]
+            try:
+                self.logger.info(f"[PROCESS][ALBUM][START] Обработка альбома {getattr(msgs[0], 'grouped_id', 'unknown')} для {channel}, сообщений: {len(msgs)}")
+                start_total = time.time()
+                media_list = []
+                import time as _time
+                # Сортируем сообщения по id (обычно порядок фото в альбоме)
+                msgs_sorted = sorted(msgs, key=lambda m: m.id)
+                # Логируем содержимое temp_dir до скачивания
+                try:
+                    files_dir = os.listdir(self.temp_dir)
+                    self.logger.info(f"[DEBUG][ALBUM] Содержимое {self.temp_dir} до скачивания: {files_dir}")
+                except Exception as e:
+                    self.logger.error(f"[DEBUG][ALBUM] Ошибка при логировании содержимого temp_dir: {e}")
+                # Скачиваем все медиа
+                for idx, msg in enumerate(msgs_sorted):
+                    if msg.media:
+                        start_media = _time.time()
+                        if isinstance(msg.media, MessageMediaPhoto):
+                            unique_id = secrets.token_hex(8)
+                            file_path = os.path.join(self.temp_dir, f"{msg.id}_{unique_id}_photo")
+                            try:
+                                self.logger.info(f"[PROCESS][ALBUM][PHOTO] Скачивание media для {channel} #{msg.id}")
+                                downloaded_path = await self.client.download_media(msg, file=file_path)
+                                if downloaded_path and os.path.exists(downloaded_path):
+                                    file_size = os.path.getsize(downloaded_path)
+                                    self.logger.info(f"[PROCESS][ALBUM][PHOTO] Файл скачан: {downloaded_path}, размер: {file_size} байт")
+                                    media_list.append({
+                                        "type": "photo",
+                                        "local_path": downloaded_path,
+                                        "caption": msg.message if idx == 0 else ""  # подпись только у первого
+                                    })
+                                else:
+                                    self.logger.error(f"[PROCESS][ALBUM][PHOTO] Файл не найден после скачивания: {downloaded_path}")
+                            except Exception as e:
+                                self.logger.error(f"[PROCESS][ALBUM][PHOTO] Ошибка: {e}\n{traceback.format_exc()}")
+                        elif isinstance(msg.media, MessageMediaDocument):
+                            unique_id = secrets.token_hex(8)
+                            file_path = os.path.join(self.temp_dir, f"{msg.id}_{unique_id}_document")
+                            try:
+                                self.logger.info(f"[PROCESS][ALBUM][DOC] Скачивание media для {channel} #{msg.id}")
+                                downloaded_path = await self.client.download_media(msg, file=file_path)
+                                if downloaded_path and os.path.exists(downloaded_path):
+                                    file_size = os.path.getsize(downloaded_path)
+                                    doc = msg.document
+                                    mime = doc.mime_type if hasattr(doc, 'mime_type') else None
+                                    size = doc.size if hasattr(doc, 'size') else None
+                                    media_type = "document"
+                                    if mime:
+                                        if mime.startswith("video"):
+                                            media_type = "video"
+                                        elif mime.startswith("audio"):
+                                            media_type = "audio"
+                                        elif mime == "application/x-tgsticker":
+                                            media_type = "sticker"
+                                        elif mime == "image/webp":
+                                            media_type = "sticker"
+                                        elif mime == "image/gif":
+                                            media_type = "animation"
+                                    media_list.append({
+                                        "type": media_type,
+                                        "local_path": downloaded_path,
+                                        "mime_type": mime,
+                                        "size": size,
+                                        "caption": msg.message if idx == 0 else ""
+                                    })
+                                else:
+                                    self.logger.error(f"[PROCESS][ALBUM][DOC] Файл не найден после скачивания: {downloaded_path}")
+                            except Exception as e:
+                                self.logger.error(f"[PROCESS][ALBUM][DOC] Ошибка: {e}\n{traceback.format_exc()}")
+                # Формируем payload и отправляем в Kafka
+                start_payload = _time.time()
+                data = {
+                    'channel': channel,
+                    'id': msgs_sorted[0].id,
+                    'date': msgs_sorted[0].date.isoformat() if msgs_sorted[0].date else '',
+                    'text': msgs_sorted[0].message or '',
+                    'media': media_list
+                }
+                self.logger.info(f"[PROCESS][ALBUM][KAFKA] Payload для отправки: {json.dumps(data, ensure_ascii=False)[:500]}")
+                try:
+                    await async_backoff(self.kafka.send, data, logger=self.logger)
+                    self.logger.info(f"[PROCESS][ALBUM][KAFKA] Альбом отправлен: {channel} #{msgs_sorted[0].id} (медиа: {len(media_list)})")
+                except Exception as e:
+                    self.logger.error(f"[PROCESS][ALBUM][KAFKA] Ошибка отправки альбома в Kafka: {e}\n{traceback.format_exc()}")
+                self.logger.info(f"[PROCESS][ALBUM][KAFKA] Время формирования и отправки payload: {_time.time() - start_payload:.2f} сек")
+                # Логируем содержимое temp_dir после отправки
+                try:
+                    files_dir = os.listdir(self.temp_dir)
+                    self.logger.info(f"[DEBUG][ALBUM] Содержимое {self.temp_dir} после отправки: {files_dir}")
+                except Exception as e:
+                    self.logger.error(f"[DEBUG][ALBUM] Ошибка при логировании содержимого temp_dir: {e}")
+                self.logger.info(f"[PROCESS][ALBUM][END] Обработка альбома {getattr(msgs[0], 'grouped_id', 'unknown')} завершена за {time.time() - start_total:.2f} сек")
+            except Exception as e:
+                self.logger.error(f"[PROCESS][ALBUM][FATAL] Ошибка обработки альбома {getattr(msgs[0], 'grouped_id', 'unknown')}: {e}\n{traceback.format_exc()}")
+            return
+        # Обычная обработка одиночного сообщения
         channel = task["channel"]
         msg = task["message"]
         try:
             self.logger.info(f"[PROCESS][START] Обработка сообщения {channel} #{getattr(msg, 'id', 'unknown')}")
+            start_total = time.time()
             media_list = []
-            import time
+            import time as _time
+            # Логируем состояние клиента
+            self.logger.info(f"[DEBUG] Telethon connected: {self.client.is_connected()}, authorized: {await self.client.is_user_authorized()}")
+            # Логируем содержимое temp_dir до скачивания
+            try:
+                files_dir = os.listdir(self.temp_dir)
+                self.logger.info(f"[DEBUG] Содержимое {self.temp_dir} до скачивания: {files_dir}")
+            except Exception as e:
+                self.logger.error(f"[DEBUG] Ошибка при логировании содержимого temp_dir: {e}")
             # Скачивание и загрузка медиа
             if msg.media:
-                start_media = time.time()
+                start_media = _time.time()
                 if isinstance(msg.media, MessageMediaPhoto):
-                    file_path = os.path.join(self.temp_dir, f"{msg.id}_photo")
+                    unique_id = secrets.token_hex(8)
+                    file_path = os.path.join(self.temp_dir, f"{msg.id}_{unique_id}_photo")
                     try:
                         self.logger.info(f"[PROCESS][PHOTO] Начало скачивания media для {channel} #{msg.id}")
-                        await self.client.download_media(msg, file=file_path)
-                        self.logger.info(f"[PROCESS][PHOTO] Скачивание завершено для {channel} #{msg.id}")
-                        if os.path.exists(file_path):
-                            file_size = os.path.getsize(file_path)
-                            self.logger.info(f"[PROCESS][PHOTO] Файл скачан: {file_path}, размер: {file_size} байт")
+                        downloaded_path = await self.client.download_media(msg, file=file_path)
+                        self.logger.info(f"[PROCESS][PHOTO] Скачивание завершено для {channel} #{msg.id}, путь: {downloaded_path}")
+                        if downloaded_path and os.path.exists(downloaded_path):
+                            file_size = os.path.getsize(downloaded_path)
+                            self.logger.info(f"[PROCESS][PHOTO] Файл скачан: {downloaded_path}, размер: {file_size} байт")
                             media_list.append({
                                 "type": "photo",
-                                "local_path": file_path,
+                                "local_path": downloaded_path,
                                 "caption": msg.message or ""
                             })
                         else:
-                            self.logger.error(f"[PROCESS][PHOTO] Файл не найден после скачивания: {file_path}")
+                            self.logger.error(f"[PROCESS][PHOTO] Файл не найден после скачивания: {downloaded_path}")
+                            try:
+                                files_dir = os.listdir(self.temp_dir)
+                                perms = oct(os.stat(self.temp_dir).st_mode)
+                                self.logger.error(f"[PROCESS][PHOTO] Содержимое {self.temp_dir}: {files_dir}, права: {perms}")
+                            except Exception as e:
+                                self.logger.error(f"[PROCESS][PHOTO] Ошибка при логировании содержимого temp_dir: {e}")
                     except Exception as e:
                         self.logger.error(f"[PROCESS][PHOTO] Ошибка: {e}\n{traceback.format_exc()}")
                 elif isinstance(msg.media, MessageMediaDocument):
-                    file_path = os.path.join(self.temp_dir, f"{msg.id}_document")
+                    unique_id = secrets.token_hex(8)
+                    file_path = os.path.join(self.temp_dir, f"{msg.id}_{unique_id}_document")
                     try:
                         self.logger.info(f"[PROCESS][DOC] Начало скачивания media для {channel} #{msg.id}")
-                        await self.client.download_media(msg, file=file_path)
-                        self.logger.info(f"[PROCESS][DOC] Скачивание завершено для {channel} #{msg.id}")
-                        if os.path.exists(file_path):
-                            file_size = os.path.getsize(file_path)
-                            self.logger.info(f"[PROCESS][DOC] Файл скачан: {file_path}, размер: {file_size} байт")
+                        downloaded_path = await self.client.download_media(msg, file=file_path)
+                        self.logger.info(f"[PROCESS][DOC] Скачивание завершено для {channel} #{msg.id}, путь: {downloaded_path}")
+                        if downloaded_path and os.path.exists(downloaded_path):
+                            file_size = os.path.getsize(downloaded_path)
+                            self.logger.info(f"[PROCESS][DOC] Файл скачан: {downloaded_path}, размер: {file_size} байт")
                             doc = msg.document
                             mime = doc.mime_type if hasattr(doc, 'mime_type') else None
                             size = doc.size if hasattr(doc, 'size') else None
@@ -356,13 +476,19 @@ class ParserCore:
                                     media_type = "animation"
                             media_list.append({
                                 "type": media_type,
-                                "local_path": file_path,
+                                "local_path": downloaded_path,
                                 "mime_type": mime,
                                 "size": size,
                                 "caption": msg.message or ""
                             })
                         else:
-                            self.logger.error(f"[PROCESS][DOC] Файл не найден после скачивания: {file_path}")
+                            self.logger.error(f"[PROCESS][DOC] Файл не найден после скачивания: {downloaded_path}")
+                            try:
+                                files_dir = os.listdir(self.temp_dir)
+                                perms = oct(os.stat(self.temp_dir).st_mode)
+                                self.logger.error(f"[PROCESS][DOC] Содержимое {self.temp_dir}: {files_dir}, права: {perms}")
+                            except Exception as e:
+                                self.logger.error(f"[PROCESS][DOC] Ошибка при логировании содержимого temp_dir: {e}")
                     except Exception as e:
                         self.logger.error(f"[PROCESS][DOC] Ошибка: {e}\n{traceback.format_exc()}")
                 elif isinstance(msg.media, MessageMediaContact):
@@ -389,8 +515,9 @@ class ParserCore:
                         "question": poll.question,
                         "answers": [a.text for a in poll.answers]
                     })
-                self.logger.info(f"[PROCESS][MEDIA] Время обработки медиа: {time.time() - start_media:.2f} сек")
+                self.logger.info(f"[PROCESS][MEDIA] Время обработки медиа: {_time.time() - start_media:.2f} сек")
             # Формируем payload и отправляем в Kafka
+            start_payload = _time.time()
             data = {
                 'channel': channel,
                 'id': msg.id,
@@ -399,15 +526,29 @@ class ParserCore:
                 'media': media_list
             }
             self.logger.info(f"[PROCESS][KAFKA] Payload для отправки: {json.dumps(data, ensure_ascii=False)[:500]}")
-            await async_backoff(self.kafka.send, data, logger=self.logger)
-            self.logger.info(f"[PROCESS][KAFKA] Сообщение отправлено: {channel} #{msg.id} (медиа: {len(media_list)})")
-            await self.state.set_last_id(channel, msg.id)
-            await self.monitor.update_activity()
+            try:
+                await async_backoff(self.kafka.send, data, logger=self.logger)
+                self.logger.info(f"[PROCESS][KAFKA] Сообщение отправлено: {channel} #{msg.id} (медиа: {len(media_list)})")
+            except Exception as e:
+                self.logger.error(f"[PROCESS][KAFKA] Ошибка отправки в Kafka: {e}\n{traceback.format_exc()}")
+            self.logger.info(f"[PROCESS][KAFKA] Время формирования и отправки payload: {_time.time() - start_payload:.2f} сек")
+            # Логируем содержимое temp_dir после отправки
+            try:
+                files_dir = os.listdir(self.temp_dir)
+                self.logger.info(f"[DEBUG] Содержимое {self.temp_dir} после отправки: {files_dir}")
+            except Exception as e:
+                self.logger.error(f"[DEBUG] Ошибка при логировании содержимого temp_dir: {e}")
+            self.logger.info(f"[PROCESS][END] Обработка сообщения {channel} #{getattr(msg, 'id', 'unknown')} завершена за {time.time() - start_total:.2f} сек")
         except Exception as e:
             self.logger.error(f"[PROCESS][FATAL] Ошибка обработки сообщения {channel} #{getattr(msg, 'id', 'unknown')}: {e}\n{traceback.format_exc()}")
 
     async def _process_channel(self, channel, semaphore):
         self.logger.info(f"[CHANNEL] Начало обработки: {channel}")
+        
+        # Проверим состояние очереди задач
+        queue_stats = self.task_queue.get_stats()
+        self.logger.info(f"[CHANNEL] Состояние очереди задач: {queue_stats}")
+        
         async with semaphore:
             if await self.global_floodwait.is_active():
                 self.logger.info(f"[CHANNEL] Floodwait активен, пропуск: {channel}")
@@ -423,7 +564,8 @@ class ParserCore:
                     self.logger.error(f"[CHANNEL] Не удалось получить entity для {channel}, пропуск")
                     return
                 self.logger.info(f"[CHANNEL] Получен entity для {channel}: {entity}")
-                last_id = self.state.get_last_id(channel)
+                last_id = await self.state.get_last_id(channel)
+                
                 try:
                     history = await async_backoff(
                         self.client,
@@ -459,35 +601,72 @@ class ParserCore:
                 except Exception as e:
                     self.logger.error(f"[CHANNEL] Ошибка получения истории для {channel}: {e}\n{traceback.format_exc()}")
                     return
+                    
+                if not history.messages:
+                    self.logger.info(f"[CHANNEL] {channel}: История пуста, пропуск")
+                    return
+                    
                 messages = sorted(history.messages, key=lambda m: m.id)
                 self.logger.info(f"[CHANNEL] {channel}: Получено {len(messages)} сообщений, последний ID: {last_id}")
+                
                 new_msgs = [m for m in messages if m.id > last_id]
                 self.logger.info(f"[CHANNEL] {channel}: Найдено {len(new_msgs)} новых сообщений")
+                
                 if not new_msgs:
                     self.logger.info(f"[CHANNEL] {channel}: Нет новых сообщений, пропуск")
                     return
+                
+                # Сохраним максимальный ID сообщения
+                max_msg_id = max([m.id for m in new_msgs]) if new_msgs else last_id
+                
+                # Подробная информация о новых сообщениях для дебага
+                for msg in new_msgs:
+                    self.logger.info(f"[CHANNEL] {channel} #{msg.id} — обрабатываю сообщение (дата: {msg.date})")
+                    
+                # Считаем количество задач, которые нужно отправить
+                tasks_to_add = 0
                 for msg in new_msgs:
                     if not filter_message(msg.message or '', self.include, self.exclude):
                         continue
-                    # Альбомы: grouped_id
                     if hasattr(msg, 'grouped_id') and msg.grouped_id:
-                        if self.state.is_album_processed(msg.grouped_id):
-                            self.logger.info(f"[ALBUM] Альбом {msg.grouped_id} уже обработан, пропуск")
+                        if await self.state.is_album_processed(msg.grouped_id):
                             continue
                         album_msgs = [m for m in new_msgs if getattr(m, 'grouped_id', None) == msg.grouped_id]
-                        self.logger.info(f"[ALBUM] Начало обработки альбома {msg.grouped_id} (сообщений: {len(album_msgs)})")
-                        for album_msg in album_msgs:
-                            await self.task_queue.add_task({
-                                "type": "process_message",
-                                "channel": channel,
-                                "message": album_msg,
-                                "handler": self.process_message_handler
-                            })
-                        await self.state.mark_album_processed(msg.grouped_id)
-                        await self.state.set_last_id(channel, msg.id)
-                        await self.monitor.update_activity()
+                        tasks_to_add += len(album_msgs)
+                    else:
+                        tasks_to_add += 1
+                        
+                self.logger.info(f"[CHANNEL] {channel}: Будет добавлено {tasks_to_add} задач в очередь")
+                
+                # Добавляем задачи в очередь
+                # 1. Сначала обрабатываем альбомы (grouped_id)
+                processed_albums = set()
+                for msg in new_msgs:
+                    if not filter_message(msg.message or '', self.include, self.exclude):
                         continue
-                    # Одиночные сообщения
+                    if hasattr(msg, 'grouped_id') and msg.grouped_id:
+                        gid = msg.grouped_id
+                        if gid in processed_albums:
+                            continue
+                        if await self.state.is_album_processed(gid):
+                            self.logger.info(f"[ALBUM] Альбом {gid} уже обработан, пропуск")
+                            continue
+                        album_msgs = [m for m in new_msgs if getattr(m, 'grouped_id', None) == gid]
+                        self.logger.info(f"[ALBUM] Начало обработки альбома {gid} (сообщений: {len(album_msgs)})")
+                        await self.task_queue.add_task({
+                            "type": "process_album",
+                            "channel": channel,
+                            "messages": album_msgs,
+                            "handler": self.process_message_handler
+                        })
+                        await self.state.mark_album_processed(gid)
+                        processed_albums.add(gid)
+                # 2. Одиночные сообщения (без grouped_id)
+                for msg in new_msgs:
+                    if not filter_message(msg.message or '', self.include, self.exclude):
+                        continue
+                    if hasattr(msg, 'grouped_id') and msg.grouped_id:
+                        continue  # уже обработано выше
                     self.logger.info(f"[CHANNEL] {channel} #{msg.id} — отправка задачи на обработку сообщения")
                     await self.task_queue.add_task({
                         "type": "process_message",
@@ -495,8 +674,16 @@ class ParserCore:
                         "message": msg,
                         "handler": self.process_message_handler
                     })
-                    await self.state.set_last_id(channel, msg.id)
-                    await self.monitor.update_activity()
+                
+                # Обновляем last_id в самом конце после отправки всех задач в очередь
+                self.logger.info(f"[CHANNEL] Обновление last_id для {channel} на {max_msg_id}")
+                await self.state.set_last_id(channel, max_msg_id)
+                await self.monitor.update_activity()
+                
+                # Проверяем состояние очереди после добавления задач
+                queue_stats = self.task_queue.get_stats()
+                self.logger.info(f"[CHANNEL] После обработки {channel}: Состояние очереди задач: {queue_stats}")
+                
                 self.logger.info(f"[CHANNEL] Конец обработки: {channel}. Обработано {len(new_msgs)} сообщений")
             except (UserNotParticipantError, ChannelPrivateError, InviteHashInvalidError) as e:
                 self.logger.error(f"[CHANNEL] Ошибка доступа к {channel}: {type(e).__name__}: {e}. Трассировка: {traceback.format_exc()}")
@@ -536,7 +723,11 @@ class ParserCore:
             self.logger.error(f"Ошибка при отправке уведомления админу (not_member): {e}")
 
 async def main():
-    parser = ParserCore()
+    # Подключение к Postgres и инициализация схемы
+    state_manager = await PostgresStateManager.create()
+    async with state_manager.pool.acquire() as conn:
+        await init_db_schema(conn)
+    parser = ParserCore(state_manager)
     try:
         await parser.start()
     except KeyboardInterrupt:

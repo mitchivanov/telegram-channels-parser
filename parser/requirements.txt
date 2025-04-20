@@ -3,3 +3,4 @@ aiokafka>=0.8.1
 redis>=4.2.0
 python-dotenv
 minio
+asyncpg

@@ -3,6 +3,7 @@ version: '3.8'
 services:
   kafka:
     image: bitnami/kafka:latest
+    container_name: kafka
     environment:
       - KAFKA_CFG_NODE_ID=1
       - KAFKA_CFG_PROCESS_ROLES=broker,controller
@@ -24,14 +25,18 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    mem_limit: 1.5g
+    cpus: 1.5
 
   redis:
     image: redis:7
+    container_name: redis
     ports:
       - "6379:6379"
 
   parser:
     build: ./parser
+    container_name: parser
     volumes:
       - parser_session:/app/session
       - parser_temp:/app/temp
@@ -47,16 +52,22 @@ services:
       - KAFKA_CONFIG=/app/config/kafka_config.json
       - REDIS_URL=redis://redis:6379/0
     restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
 
   notifications-bot:
     build: ./notifications-bot
+    container_name: notifications-bot
     depends_on:
-      - redis
+      redis:
+        condition: service_started
     environment:
       - REDIS_URL=redis://redis:6379/0
       - CODE_BOT_TOKEN=${CODE_BOT_TOKEN}
       - ADMIN_IDS=${ADMIN_IDS}
     restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.25
 
   filter-backend:
     build:
@@ -72,13 +83,19 @@ services:
     ports:
       - "8000:8000"
     depends_on:
-      - kafka
-      - redis
-      - db
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      db:
+        condition: service_started
     restart: unless-stopped
     command: uvicorn main:app --host 0.0.0.0 --port 8000
     volumes:
       - ./filter:/app
+      - parser_temp:/app/temp
+    mem_limit: 512m
+    cpus: 0.5
 
   filter-worker:
     build:
@@ -92,13 +109,19 @@ services:
       - CHANNEL2_ID=${CHANNEL2_ID}
       - CHANNEL3_ID=${CHANNEL3_ID}
     depends_on:
-      - kafka
-      - redis
-      - db
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      db:
+        condition: service_started
     restart: unless-stopped
     command: python kafka_worker.py
     volumes:
       - ./filter:/app
+      - parser_temp:/app/temp
+    mem_limit: 512m
+    cpus: 0.5
 
   filter-frontend:
     build:
@@ -108,8 +131,11 @@ services:
     ports:
       - "8080:80"
     depends_on:
-      - filter-backend
+      filter-backend:
+        condition: service_started
     restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.25
 
   channels-bot:
     build:
@@ -126,9 +152,30 @@ services:
       kafka:
         condition: service_healthy
     restart: unless-stopped
+    volumes:
+      - parser_temp:/app/temp
+    mem_limit: 256m
+    cpus: 0.25
+
+  channels-cleanup-worker:
+    build:
+      context: ./channels-bot
+    container_name: channels-cleanup-worker
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_started
+    restart: unless-stopped
+    command: python cleanup_worker.py
+    volumes:
+      - parser_temp:/app/temp
+    mem_limit: 128m
+    cpus: 0.15
 
   db:
     image: postgres:15
+    container_name: db
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
@@ -137,16 +184,22 @@ services:
       - "5432:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
+    mem_limit: 1g
+    cpus: 1.0
 
   kafdrop:
     image: obsidiandynamics/kafdrop
+    container_name: kafdrop
     restart: unless-stopped
     ports:
       - "9002:9000"
     environment:
       KAFKA_BROKERCONNECT: "kafka:9092"
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
+    mem_limit: 256m
+    cpus: 0.25
 
 volumes:
   kafka_data:
