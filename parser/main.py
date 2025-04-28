@@ -62,7 +62,6 @@ class ParserCore:
             'topic': KAFKA_RAW_TOPIC
         })
         self.monitor = ActivityMonitor()
-        # Не используем decode_responses=True для Redis, так как хранятся бинарные данные
         self.redis = Redis.from_url(REDIS_URL)
         self.client = TelegramClient(
             TELEGRAM_SESSION,
@@ -78,54 +77,23 @@ class ParserCore:
         os.makedirs(self.temp_dir, exist_ok=True)
         self.channels = []
         self.task_queue = TaskQueueManager(num_workers=5)
-        
-        # Проверяем наличие файла и загружаем каналы
-        sources_file = 'updated_sources.txt'
-        if os.path.exists(sources_file):
-            self.logger.info(f"Чтение списка каналов из {sources_file}")
-            with open(sources_file, 'r', encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        self.channels.append(line)
-            self.logger.info(f"Загружено {len(self.channels)} каналов")
-        else:
-            self.logger.error(f"Файл {sources_file} не найден! Список каналов пуст.")
-            
         self.entity_cache = {}  # in-memory cache
+
+    async def load_channels_from_db(self):
+        self.channels = await self.state.get_all_usernames()
+        self.logger.info(f"Загружено {len(self.channels)} каналов из базы telegram_entities")
 
     async def get_entity_cached(self, channel):
         # 1. In-memory cache
         if channel in self.entity_cache:
             return self.entity_cache[channel]
-        # 2. Redis cache через self.redis
-        if self.redis:
-            try:
-                redis_key = f"entity:{channel}"
-                data = await self.redis.get(redis_key)
-                if data:
-                    import pickle
-                    entity = pickle.loads(data)
-                    self.entity_cache[channel] = entity
-                    return entity
-            except Exception as e:
-                self.logger.warning(f"[ENTITY_CACHE] Ошибка чтения из Redis: {e}")
-        # 3. Telegram API с backoff
-        try:
-            entity = await async_backoff(self.client.get_entity, channel, logger=self.logger)
+        # 2. Только Postgres
+        entity = await self.state.get_entity_by_username(channel)
+        if entity:
             self.entity_cache[channel] = entity
-            # Пишем в Redis
-            if self.redis:
-                try:
-                    import pickle
-                    serialized_data = pickle.dumps(entity)
-                    await self.redis.set(f"entity:{channel}", serialized_data, ex=86400)
-                except Exception as e:
-                    self.logger.warning(f"[ENTITY_CACHE] Ошибка записи в Redis: {e}")
             return entity
-        except Exception as e:
-            self.logger.error(f"[ENTITY_CACHE] Ошибка получения entity для {channel}: {e}")
-            return None
+        self.logger.error(f"[ENTITY][PG] Не удалось получить entity для {channel} — канал будет пропущен!")
+        return None
 
     async def _get_code_from_admin(self, code_type):
         try:
@@ -211,7 +179,6 @@ class ParserCore:
     async def start(self):
         try:
             self.logger.info("Starting parser initialization...")
-            # Проверяем, существует ли директория для сессии
             session_dir = os.path.dirname(TELEGRAM_SESSION)
             if session_dir and not os.path.exists(session_dir):
                 os.makedirs(session_dir)
@@ -220,14 +187,14 @@ class ParserCore:
             await self._start_telethon()
             await self.kafka.start()
             await self.task_queue.start()
+            await self.load_channels_from_db()
             self.is_running = True
-            self.logger.info(f"Parser started with {len(self.channels)} channels configured")
-            
-            # Проверяем, есть ли каналы для обработки
+            self.logger.info(f"Parser started with {len(self.channels)} channels configured (из базы)")
+
             if not self.channels:
-                self.logger.warning("No channels configured! Please check updated_sources.txt")
+                self.logger.warning("No channels configured! Please check telegram_entities table in Postgres")
                 self.logger.info("Parser will continue running but won't process any channels")
-            
+
             await self.monitor.start_monitoring()
             await self.run()
         except Exception as e:
@@ -563,7 +530,7 @@ class ParserCore:
                 if not entity:
                     self.logger.error(f"[CHANNEL] Не удалось получить entity для {channel}, пропуск")
                     return
-                self.logger.info(f"[CHANNEL] Получен entity для {channel}: {entity}")
+                self.logger.info(f"[CHANNEL] Получен entity для {channel}: id={getattr(entity, 'id', 'None')}, title={getattr(entity, 'title', 'None')}")
                 last_id = await self.state.get_last_id(channel)
                 
                 try:

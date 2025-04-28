@@ -6,16 +6,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from db import SessionLocal
-from models import Filter, ModerationQueue
+from models import Filter
 import logging
 import redis.asyncio as aioredis
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(filename)s:%(lineno)d %(funcName)s() - %(message)s',
+)
 logger = logging.getLogger("kafka_worker")
 
 KAFKA_BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
 RAW_TOPIC = os.environ.get("KAFKA_RAW_TOPIC", "raw_posts")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
+MODERATION_QUEUE = "moderation_queue"
+APPROVED_QUEUE = "approved_queue"
 
 def build_channel_topics():
     topics = {}
@@ -32,19 +37,14 @@ CHANNEL_TOPICS = build_channel_topics()
 async def get_filters(db: AsyncSession):
     result = await db.execute(select(Filter).options(selectinload(Filter.channel_obj)))
     filters = result.scalars().all()
-    # Возвращаем словарь {channel.name: filter}
     return {f.channel_obj.name: f for f in filters if f.channel_obj}
 
-async def add_to_moderation_queue(db: AsyncSession, post, target_channel):
-    logger.info(f"[MODERATION] Добавляю пост в очередь модерации для канала {target_channel}")
-    db_post = ModerationQueue(
-        channel=target_channel,
-        post_json=json.dumps(post, ensure_ascii=False),
-        status="pending"
-    )
-    db.add(db_post)
-    await db.commit()
-    logger.info(f"[MODERATION] Пост добавлен в очередь модерации для канала {target_channel}")
+async def add_to_moderation_queue_redis(redis, post, target_channel):
+    logger.info(f"[MODERATION] Кладу пост в Redis moderation_queue для канала {target_channel}")
+    post_copy = dict(post)
+    post_copy["target_channel"] = target_channel
+    await redis.rpush(MODERATION_QUEUE, json.dumps(post_copy, ensure_ascii=False))
+    logger.info(f"[MODERATION] Пост добавлен в Redis moderation_queue для канала {target_channel}")
 
 async def send_to_channel_topic(producer, topic, post_filtered):
     logger.info(f"[KAFKA] Отправляю пост в топик {topic}")
@@ -56,7 +56,6 @@ async def send_to_channel_topic(producer, topic, post_filtered):
             if not os.path.exists(local_path):
                 logger.error(f"[FILTER] Файл не найден: {local_path}")
                 continue
-            # Прокидываем local_path дальше, не сериализуем файл
             media_out.append({"type": m.get("type", "photo"), "local_path": local_path})
         else:
             url = m.get("url")
@@ -72,6 +71,25 @@ async def send_to_channel_topic(producer, topic, post_filtered):
     except Exception as e:
         logger.error(f"[KAFKA] Ошибка при отправке в топик {topic}: {e}")
         return False
+
+async def approved_queue_worker(redis, producer):
+    logger.info("[APPROVED_QUEUE] Запуск воркера очереди одобренных постов...")
+    while True:
+        post_json = await redis.lpop(APPROVED_QUEUE)
+        if post_json:
+            try:
+                post = json.loads(post_json)
+                channel = post.get("target_channel") or post.get("channel")
+                topic = CHANNEL_TOPICS.get(channel)
+                if not topic:
+                    logger.error(f"[APPROVED_QUEUE] Не найден топик для канала {channel}")
+                    continue
+                logger.info(f"[APPROVED_QUEUE] Отправляю одобренный пост в топик {topic}")
+                await send_to_channel_topic(producer, topic, post)
+            except Exception as e:
+                logger.error(f"[APPROVED_QUEUE] Ошибка обработки одобренного поста: {e}")
+        else:
+            await asyncio.sleep(1)
 
 async def kafka_filter_worker():
     logger.info("[KAFKA] Запуск consumer и producer...")
@@ -90,8 +108,10 @@ async def kafka_filter_worker():
     logger.info("[KAFKA] Consumer запущен")
     await producer.start()
     logger.info("[KAFKA] Producer запущен")
+    redis = aioredis.from_url(REDIS_URL)
+    # Запускаем воркер очереди одобренных постов
+    asyncio.create_task(approved_queue_worker(redis, producer))
     try:
-        redis = aioredis.from_url(REDIS_URL)
         while True:
             async for msg in consumer:
                 logger.info(f"[KAFKA] Получено сообщение из топика {msg.topic}: {str(msg.value)[:100]}")
@@ -100,7 +120,6 @@ async def kafka_filter_worker():
                 if "channel" in post:
                     post["source_channel"] = post["channel"]
                     del post["channel"]
-                # Собираем все локальные файлы из media
                 media_files = []
                 for m in post.get("media", []):
                     if m.get("local_path") and os.path.exists(m["local_path"]):
@@ -108,12 +127,10 @@ async def kafka_filter_worker():
                 sent_to_any_channel = False
                 send_tasks = []
                 send_channels = []
-                # Reference counting для media-файлов
                 media_files_to_count = set()
                 for m in post.get("media", []):
                     if m.get("local_path") and os.path.exists(m["local_path"]):
                         media_files_to_count.add(m["local_path"])
-                # Считаем, сколько каналов получит этот пост
                 num_channels = 0
                 async with SessionLocal() as db:
                     filters = await get_filters(db)
@@ -142,9 +159,10 @@ async def kafka_filter_worker():
                                 post_filtered["text"] = re.sub(r'@\w+', '[канал удален]', post_filtered["text"])
                                 logger.info(f"[FILTER] Ссылки на каналы удалены для {target_channel}")
                             if not skip and rule.moderation_required:
-                                logger.info(f"[MODERATION] Требуется модерация для {target_channel}, отправляю в очередь модерации")
-                                await add_to_moderation_queue(db, post_filtered, target_channel)
+                                logger.info(f"[MODERATION] Требуется модерация для {target_channel}, отправляю в Redis moderation_queue")
+                                await add_to_moderation_queue_redis(redis, post_filtered, target_channel)
                                 skip = True
+                                continue
                         else:
                             logger.info(f"[FILTER] Фильтр для канала {target_channel} не найден, пропускаю сообщение без фильтрации")
                         topic = CHANNEL_TOPICS.get(target_channel)
@@ -154,19 +172,16 @@ async def kafka_filter_worker():
                             send_channels.append(target_channel)
                         elif not skip:
                             logger.warning(f"[KAFKA] Не найден топик для канала {target_channel}")
-                    # Reference counting: увеличиваем счётчик для каждого файла
                     num_channels = len(send_channels)
                     if num_channels > 0:
                         for f in media_files_to_count:
                             await redis.incrby(f"file:{f}", num_channels)
-                    # Параллельная отправка во все топики
                     results = []
                     if send_tasks:
                         results = await asyncio.gather(*send_tasks, return_exceptions=True)
                         for ch, res in zip(send_channels, results):
                             logger.info(f"[KAFKA] Результат отправки в канал {ch}: {res}")
                         sent_to_any_channel = any(res is True for res in results)
-                # Если не отправлено ни в один канал — удаляем временные файлы
                 if not sent_to_any_channel and media_files:
                     for f in media_files:
                         try:

@@ -25,8 +25,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
-    mem_limit: 1.5g
-    cpus: 1.5
 
   redis:
     image: redis:7
@@ -52,8 +50,6 @@ services:
       - KAFKA_CONFIG=/app/config/kafka_config.json
       - REDIS_URL=redis://redis:6379/0
     restart: unless-stopped
-    mem_limit: 512m
-    cpus: 0.5
 
   notifications-bot:
     build: ./notifications-bot
@@ -66,8 +62,6 @@ services:
       - CODE_BOT_TOKEN=${CODE_BOT_TOKEN}
       - ADMIN_IDS=${ADMIN_IDS}
     restart: unless-stopped
-    mem_limit: 256m
-    cpus: 0.25
 
   filter-backend:
     build:
@@ -94,8 +88,6 @@ services:
     volumes:
       - ./filter:/app
       - parser_temp:/app/temp
-    mem_limit: 512m
-    cpus: 0.5
 
   filter-worker:
     build:
@@ -120,8 +112,6 @@ services:
     volumes:
       - ./filter:/app
       - parser_temp:/app/temp
-    mem_limit: 512m
-    cpus: 0.5
 
   filter-frontend:
     build:
@@ -134,8 +124,6 @@ services:
       filter-backend:
         condition: service_started
     restart: unless-stopped
-    mem_limit: 256m
-    cpus: 0.25
 
   channels-bot:
     build:
@@ -154,8 +142,6 @@ services:
     restart: unless-stopped
     volumes:
       - parser_temp:/app/temp
-    mem_limit: 256m
-    cpus: 0.25
 
   channels-cleanup-worker:
     build:
@@ -170,8 +156,6 @@ services:
     command: python cleanup_worker.py
     volumes:
       - parser_temp:/app/temp
-    mem_limit: 128m
-    cpus: 0.15
 
   db:
     image: postgres:15
@@ -184,8 +168,6 @@ services:
       - "5432:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
-    mem_limit: 1g
-    cpus: 1.0
 
   kafdrop:
     image: obsidiandynamics/kafdrop
@@ -198,11 +180,77 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
-    mem_limit: 256m
-    cpus: 0.25
+
+  loki:
+    image: grafana/loki:2.9.2
+    container_name: loki
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    user: "0:0"
+    volumes:
+      - loki_data:/loki
+      - ./loki-config.yaml:/etc/loki/local-config.yaml
+    restart: unless-stopped
+
+  promtail:
+    image: grafana/promtail:2.9.2
+    container_name: promtail
+    volumes:
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/log:/var/log:ro
+      - ./promtail-config.yaml:/etc/promtail/config.yaml
+    command: -config.file=/etc/promtail/config.yaml
+    depends_on:
+      - loki
+
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.1
+    container_name: node-exporter
+    ports:
+      - "9100:9100"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.2.3
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    depends_on:
+      - loki
+      - prometheus
+    volumes:
+      - grafana_data:/var/lib/grafana
+
+  filter-bot:
+    build:
+      context: ./filter-bot
+      dockerfile: Dockerfile
+    container_name: filter-bot
+    env_file:
+      - ./filter-bot/.env
+    depends_on:
+      - redis
+    restart: unless-stopped
 
 volumes:
   kafka_data:
   db_data:
   parser_session:
   parser_temp:
+  grafana_data:
+  loki_data:

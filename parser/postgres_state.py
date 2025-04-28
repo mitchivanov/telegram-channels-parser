@@ -1,6 +1,7 @@
 import os
 import asyncpg
 import logging
+import pickle
 
 class PostgresStateManager:
     def __init__(self, pool):
@@ -58,4 +59,21 @@ class PostgresStateManager:
                 "INSERT INTO processed_albums (grouped_id) VALUES ($1) ON CONFLICT DO NOTHING",
                 grouped_id
             )
-            self.logger.info(f"[STATE][PG] Альбом {grouped_id} отмечен как обработанный") 
+            self.logger.info(f"[STATE][PG] Альбом {grouped_id} отмечен как обработанный")
+
+    async def get_entity_by_username(self, username):
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT entity_data FROM telegram_entities WHERE username = $1", username
+            )
+            if not row:
+                self.logger.error(f"[ENTITY][PG] Entity для {username} не найден в базе!")
+                return None
+            entity = pickle.loads(row['entity_data'])
+            self.logger.info(f"[ENTITY][PG] Entity для {username} успешно получен из базы")
+            return entity
+
+    async def get_all_usernames(self):
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("SELECT username FROM telegram_entities")
+            return [row['username'] for row in rows] 
