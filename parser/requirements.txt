@@ -4,3 +4,4 @@ redis>=4.2.0
 python-dotenv
 minio
 asyncpg
+cachetools>=5.0.0

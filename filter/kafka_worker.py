@@ -9,6 +9,7 @@ from db import SessionLocal
 from models import Filter
 import logging
 import redis.asyncio as aioredis
+from utils import extract_cashback_percent
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,6 +22,14 @@ RAW_TOPIC = os.environ.get("KAFKA_RAW_TOPIC", "raw_posts")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
 MODERATION_QUEUE = "moderation_queue"
 APPROVED_QUEUE = "approved_queue"
+PAUSE_KEY_PREFIX = "filtering:paused:"
+
+# Словарь соответствия ID каналов их названиям
+CHANNEL_NAMES = {
+    '-1002503014558': 'Премиум канал',
+    '-1002687437494': 'Базовый канал',
+    '-1001655410418': 'Бесплатный канал',
+}
 
 def build_channel_topics():
     topics = {}
@@ -40,23 +49,58 @@ async def get_filters(db: AsyncSession):
     return {f.channel_obj.name: f for f in filters if f.channel_obj}
 
 async def add_to_moderation_queue_redis(redis, post, target_channel):
-    logger.info(f"[MODERATION] Кладу пост в Redis moderation_queue для канала {target_channel}")
+    channel_name = CHANNEL_NAMES.get(target_channel, target_channel)
+    logger.info(f"[MODERATION_DETAIL] Получен пост для отправки в очередь модерации, канал {target_channel} ({channel_name})")
+    logger.info(f"[MODERATION_DETAIL] Исходные данные поста: {json.dumps(post, ensure_ascii=False)}")
     post_copy = dict(post)
+    
+    # Используем название канала вместо ID, если оно есть в словаре
     post_copy["target_channel"] = target_channel
-    await redis.rpush(MODERATION_QUEUE, json.dumps(post_copy, ensure_ascii=False))
-    logger.info(f"[MODERATION] Пост добавлен в Redis moderation_queue для канала {target_channel}")
+    post_copy["target_channel_name"] = channel_name
+    
+    # Фильтруем медиа как в send_to_channel_topic
+    media = post_copy.get("media", [])
+    logger.info(f"[MODERATION_DETAIL] Исходные медиа файлы ({len(media)}): {json.dumps(media, ensure_ascii=False)}")
+    media_out = []
+    for i, m in enumerate(media):
+        if m.get("file_id"):
+            logger.info(f"[MODERATION_DETAIL] [{i}] Добавляю медиа с file_id: {m.get('file_id')}")
+            media_out.append(m)
+        elif m.get("local_path") and os.path.exists(m["local_path"]):
+            logger.info(f"[MODERATION_DETAIL] [{i}] Добавляю медиа с local_path: {m['local_path']}")
+            media_out.append(m)
+        elif m.get("url"):
+            logger.info(f"[MODERATION_DETAIL] [{i}] Добавляю медиа с url: {m.get('url')}")
+            media_out.append(m)
+        else:
+            logger.error(f"[MODERATION_DETAIL] [{i}] Нет подходящего источника для медиа: {json.dumps(m, ensure_ascii=False)}")
+    post_copy["media"] = media_out
+    logger.info(f"[MODERATION_DETAIL] Подготовленные медиа файлы ({len(media_out)}): {json.dumps(media_out, ensure_ascii=False)}")
+    post_json = json.dumps(post_copy, ensure_ascii=False)
+    logger.info(f"[MODERATION_DETAIL] Подготовленные данные для очереди: {post_json}")
+    await redis.rpush(MODERATION_QUEUE, post_json)
+    logger.info(f"[MODERATION] Пост добавлен в Redis moderation_queue для канала {channel_name} ({target_channel})")
 
 async def send_to_channel_topic(producer, topic, post_filtered):
     logger.info(f"[KAFKA] Отправляю пост в топик {topic}")
     media = post_filtered.get("media", [])
     media_out = []
     for m in media:
-        if m.get("local_path"):
+        # Приоритет 1: file_id (новый формат)
+        if m.get("file_id"):
+            media_out.append({
+                "type": m.get("type", "photo"),
+                "file_id": m["file_id"],
+                "mime_type": m.get("mime_type")
+            })
+        # Приоритет 2: local_path (старый формат)
+        elif m.get("local_path"):
             local_path = m["local_path"]
             if not os.path.exists(local_path):
                 logger.error(f"[FILTER] Файл не найден: {local_path}")
                 continue
             media_out.append({"type": m.get("type", "photo"), "local_path": local_path})
+        # Приоритет 3: url (старый формат)
         else:
             url = m.get("url")
             media_out.append({"type": m.get("type", "photo"), "url": url})
@@ -79,6 +123,7 @@ async def approved_queue_worker(redis, producer):
         if post_json:
             try:
                 post = json.loads(post_json)
+                # Получаем ID канала из поля target_channel
                 channel = post.get("target_channel") or post.get("channel")
                 topic = CHANNEL_TOPICS.get(channel)
                 if not topic:
@@ -108,7 +153,7 @@ async def kafka_filter_worker():
     logger.info("[KAFKA] Consumer запущен")
     await producer.start()
     logger.info("[KAFKA] Producer запущен")
-    redis = aioredis.from_url(REDIS_URL)
+    redis = aioredis.from_url(REDIS_URL, decode_responses=True)
     # Запускаем воркер очереди одобренных постов
     asyncio.create_task(approved_queue_worker(redis, producer))
     try:
@@ -121,13 +166,16 @@ async def kafka_filter_worker():
                     post["source_channel"] = post["channel"]
                     del post["channel"]
                 media_files = []
+                # Собираем local_path из медиа для последующей очистки
                 for m in post.get("media", []):
                     if m.get("local_path") and os.path.exists(m["local_path"]):
                         media_files.append(m["local_path"])
                 sent_to_any_channel = False
+                sent_to_moderation = False  # Новый флаг для отслеживания отправки на модерацию
                 send_tasks = []
                 send_channels = []
                 media_files_to_count = set()
+                # Собираем local_path для подсчета
                 for m in post.get("media", []):
                     if m.get("local_path") and os.path.exists(m["local_path"]):
                         media_files_to_count.add(m["local_path"])
@@ -140,31 +188,66 @@ async def kafka_filter_worker():
                     for env_key, env_value in os.environ.items():
                         if env_key.startswith('CHANNEL') and env_key.endswith('_ID') and env_value.strip():
                             available_channels.append(env_value)
-                    logger.info(f"[FILTER] Доступные каналы: {available_channels}")
+                    logger.info(f"[DEBUG] available_channels: {available_channels}")
                     for target_channel in available_channels:
+                        pause_key = f"{PAUSE_KEY_PREFIX}{target_channel}"
+                        paused = await redis.get(pause_key)
+                        # Универсальная проверка paused
+                        paused_str = paused.decode() if isinstance(paused, bytes) else str(paused) if paused is not None else None
+                        logger.info(f"[DEBUG] Проверяю паузу: ключ={pause_key}, значение={paused}, тип={type(paused)}, канал={target_channel}")
+                        if paused_str is None or paused_str == "1":
+                            logger.info(f"[PAUSE] Канал {target_channel} на паузе, пропускаю обработку.")
+                            continue
                         post_filtered = dict(post)
                         skip = False
                         if target_channel in filters:
                             logger.info(f"[FILTER] Найден фильтр для канала {target_channel}, применяю фильтрацию")
                             rule = filters[target_channel]
-                            if rule.keywords and not any(kw.lower() in text for kw in rule.keywords):
+                            # --- Кэшбек фильтрация ---
+                            min_cb = getattr(rule, 'min_cashback_percent', None)
+                            max_cb = getattr(rule, 'max_cashback_percent', None)
+                            use_cashback = min_cb is not None or max_cb is not None
+                            cashback_ok = True
+                            if use_cashback:
+                                percents = extract_cashback_percent(text)
+                                logger.info(f"[CASHBACK] Извлечённые проценты: {percents} для канала {target_channel}")
+                                if not percents:
+                                    if rule.moderation_required:
+                                        channel_name = CHANNEL_NAMES.get(target_channel, target_channel)
+                                        logger.info(f"[MODERATION][CASHBACK] Не удалось извлечь процент кэшбэка, отправляю на модерацию для {target_channel} ({channel_name})")
+                                        await add_to_moderation_queue_redis(redis, post_filtered, target_channel)
+                                        sent_to_moderation = True
+                                        skip = True
+                                        continue
+                                    else:
+                                        logger.info(f"[CASHBACK] Не удалось извлечь процент кэшбэка, пост пропущен для {target_channel}")
+                                        skip = True
+                                else:
+                                    min_v = min_cb if min_cb is not None else 0
+                                    max_v = max_cb if max_cb is not None else 100
+                                    cashback_ok = any(min_v <= p <= max_v for p in percents)
+                                    if not cashback_ok:
+                                        logger.info(f"[CASHBACK] Пост не прошёл по диапазону кэшбэка {min_v}-{max_v}% для {target_channel}")
+                                        skip = True
+                            # --- Ключевые слова ---
+                            if not skip and rule.keywords and not any(kw.lower() in text for kw in rule.keywords):
                                 logger.info(f"[FILTER] Пост не прошёл по ключевым словам для {target_channel}")
                                 skip = True
                             if not skip and rule.stopwords and any(sw.lower() in text for sw in rule.stopwords):
                                 logger.info(f"[FILTER] Пост не прошёл по стоп-словам для {target_channel}")
                                 skip = True
                             if not skip and rule.remove_channel_links:
-                                import re
-                                post_filtered["text"] = re.sub(r'https?://t\.me/\S+', '[ссылка удалена]', post_filtered["text"])
-                                post_filtered["text"] = re.sub(r'@\w+', '[канал удален]', post_filtered["text"])
-                                logger.info(f"[FILTER] Ссылки на каналы удалены для {target_channel}")
-                            if not skip and rule.moderation_required:
-                                logger.info(f"[MODERATION] Требуется модерация для {target_channel}, отправляю в Redis moderation_queue")
+                                logger.info(f"[FILTER] Флаг remove_channel_links игнорируется для {target_channel} (функция отключена)")
+                            if not skip and rule.moderation_required and not use_cashback:
+                                channel_name = CHANNEL_NAMES.get(target_channel, target_channel)
+                                logger.info(f"[MODERATION] Требуется модерация для {target_channel} ({channel_name}), отправляю в Redis moderation_queue")
                                 await add_to_moderation_queue_redis(redis, post_filtered, target_channel)
+                                sent_to_moderation = True  # Устанавливаем флаг отправки на модерацию
                                 skip = True
                                 continue
                         else:
-                            logger.info(f"[FILTER] Фильтр для канала {target_channel} не найден, пропускаю сообщение без фильтрации")
+                            logger.warning(f"[FILTER] Фильтр для канала {target_channel} не найден — сообщение отброшено!")
+                            continue
                         topic = CHANNEL_TOPICS.get(target_channel)
                         if not skip and topic:
                             logger.info(f"[KAFKA] Отправляю пост в топик {topic} для канала {target_channel}")
@@ -173,7 +256,8 @@ async def kafka_filter_worker():
                         elif not skip:
                             logger.warning(f"[KAFKA] Не найден топик для канала {target_channel}")
                     num_channels = len(send_channels)
-                    if num_channels > 0:
+                    # Обновляем счетчики для local_path
+                    if num_channels > 0 and media_files_to_count:
                         for f in media_files_to_count:
                             await redis.incrby(f"file:{f}", num_channels)
                     results = []
@@ -182,7 +266,8 @@ async def kafka_filter_worker():
                         for ch, res in zip(send_channels, results):
                             logger.info(f"[KAFKA] Результат отправки в канал {ch}: {res}")
                         sent_to_any_channel = any(res is True for res in results)
-                if not sent_to_any_channel and media_files:
+                # Удаляем временные файлы, если они не были отправлены ни в каналы, ни на модерацию
+                if not sent_to_any_channel and not sent_to_moderation and media_files:
                     for f in media_files:
                         try:
                             os.remove(f)

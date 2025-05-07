@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from db import SessionLocal
@@ -6,12 +6,24 @@ from models import Filter, Channel
 from schemas import FilterCreate, FilterOut, ChannelOut
 from typing import List
 import logging
+import redis.asyncio as aioredis
+import os
+
+REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
+PAUSE_KEY_PREFIX = "filtering:paused:"
 
 router = APIRouter(prefix="/filters", tags=["Filters"])
 
 async def get_db():
     async with SessionLocal() as session:
         yield session
+
+async def get_redis():
+    redis = aioredis.from_url(REDIS_URL, decode_responses=True)
+    try:
+        yield redis
+    finally:
+        await redis.close()
 
 @router.get("/", response_model=List[FilterOut], summary="Получить все фильтры")
 async def get_filters(db: AsyncSession = Depends(get_db)):
@@ -95,7 +107,27 @@ async def set_filter(rule: FilterCreate, db: AsyncSession = Depends(get_db)):
         logging.error(f"Ошибка при создании/обновлении фильтра: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервера: {str(e)}")
 
-# Новый роут: получить фильтр по id канала
+@router.get("/pause_status", summary="Получить статусы паузы по всем каналам")
+async def get_pause_status(db: AsyncSession = Depends(get_db), redis=Depends(get_redis)):
+    result = await db.execute(select(Channel))
+    channels = result.scalars().all()
+    statuses = {}
+    for channel in channels:
+        key = f"{PAUSE_KEY_PREFIX}{channel.name}"
+        paused = await redis.get(key)
+        statuses[channel.id] = {"name": channel.name, "paused": paused == "1"}
+    return statuses
+
+@router.post("/pause/{channel_name}", summary="Поставить канал на паузу")
+async def pause_channel(channel_name: str, redis=Depends(get_redis)):
+    await redis.set(f"{PAUSE_KEY_PREFIX}{channel_name}", "1")
+    return {"channel": channel_name, "paused": True}
+
+@router.post("/resume/{channel_name}", summary="Снять канал с паузы")
+async def resume_channel(channel_name: str, redis=Depends(get_redis)):
+    await redis.set(f"{PAUSE_KEY_PREFIX}{channel_name}", "0")
+    return {"channel": channel_name, "paused": False}
+
 @router.get("/filter_by_id/{channel_id}", response_model=FilterOut, summary="Получить фильтр по id канала")
 async def get_filter_by_id(channel_id: int, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Filter).where(Filter.channel_id == channel_id))
@@ -108,23 +140,16 @@ async def get_filter_by_id(channel_id: int, db: AsyncSession = Depends(get_db)):
 async def get_filter(channel: str, db: AsyncSession = Depends(get_db)):
     try:
         logging.info(f"Получен запрос на получение фильтра для канала: {channel}")
-        
-        # Найти канал по имени
         channel_obj = (await db.execute(select(Channel).where(Channel.name == channel))).scalar_one_or_none()
         if not channel_obj:
             logging.warning(f"Канал {channel} не найден")
             raise HTTPException(status_code=404, detail="Channel not found")
-        
         logging.info(f"Найден канал: {channel_obj.name} (id: {channel_obj.id})")
-        
-        # Найти фильтр по channel_id
         result = await db.execute(select(Filter).where(Filter.channel_id == channel_obj.id))
         db_filter = result.scalar_one_or_none()
-        
         if not db_filter:
             logging.warning(f"Фильтр для канала {channel} не найден")
             raise HTTPException(status_code=404, detail="Filter not found")
-        
         logging.info(f"Найден фильтр (id: {db_filter.id}) для канала {channel}")
         return db_filter
     except Exception as e:

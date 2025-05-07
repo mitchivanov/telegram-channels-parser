@@ -246,6 +246,8 @@ services:
     depends_on:
       - redis
     restart: unless-stopped
+    volumes:
+      - parser_temp:/app/temp
 
 volumes:
   kafka_data:

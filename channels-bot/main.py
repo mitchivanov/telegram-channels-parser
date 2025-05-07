@@ -46,6 +46,13 @@ logging.basicConfig(
     format='%(asctime)s [%(levelname)s] %(filename)s:%(lineno)d %(funcName)s() - %(message)s',
 )
 
+# Отключение спама логов от Kafka и связанных модулей
+logging.getLogger('aiokafka').setLevel(logging.WARNING)
+logging.getLogger('kafka').setLevel(logging.WARNING)
+logging.getLogger('conn').setLevel(logging.WARNING)
+logging.getLogger('fetcher').setLevel(logging.WARNING)
+logging.getLogger('group_coordinator').setLevel(logging.WARNING)
+
 async def send_post(bot, channel_id, post, redis=None, max_retries=5, _attempt=1):
     logging.debug(f"[FUNC] Вход в send_post | channel_id={channel_id}, post={post}, redis={redis}, attempt={_attempt}")
     global last_sent
@@ -85,36 +92,49 @@ async def send_post(bot, channel_id, post, redis=None, max_retries=5, _attempt=1
             if media:
                 logging.info(f"[BOT] Найдено медиа: {len(media)} файлов. Типы: {[m.get('type') for m in media]}")
                 for idx, m in enumerate(media):
-                    logging.info(f"[BOT] Медиа #{idx+1}: type={m.get('type')}, url={m.get('url')}")
+                    logging.info(f"[BOT] Медиа #{idx+1}: type={m.get('type')}, url={m.get('url')}, file_id={m.get('file_id')}")
                 if len(media) == 1:
                     m = media[0]
                     try:
-                        local_path = m["local_path"]
-                        logging.debug(f"[SEND_POST] Проверяю наличие файла: {local_path}")
-                        if not os.path.exists(local_path):
-                            logging.error(f"[BOT] Файл не найден: {local_path}")
-                            return False
-                        input_file = FSInputFile(local_path)
-                        logging.debug(f"[SEND_POST] input_file создан: {input_file}")
-                        if m["type"] == "photo":
-                            await bot.send_photo(chat_id=channel_id, photo=input_file, caption=text)
-                        elif m["type"] == "video":
-                            await bot.send_video(chat_id=channel_id, video=input_file, caption=text)
-                        elif m["type"] == "document":
-                            await bot.send_document(chat_id=channel_id, document=input_file, caption=text)
-                        logging.info(f"[BOT] Медиа успешно отправлено (одиночное)")
-                        if redis:
-                            try:
-                                count = await redis.decr(f"file:{local_path}")
-                                logging.debug(f"[REDIS] DECR file:{local_path} -> {count}")
-                                if count == 0:
-                                    await redis.set(f'delete_after:{local_path}', 1, ex=3600)
-                                    await redis.delete(f"file:{local_path}")
-                                    logging.info(f"[BOT] Файл {local_path} помечен на удаление через 1 час (refcount=0)")
-                                else:
-                                    logging.info(f"[BOT] Файл {local_path} ещё нужен {count} каналам")
-                            except Exception as e:
-                                logging.warning(f"[BOT] Ошибка reference counting для {local_path}: {e}\n{traceback.format_exc()}")
+                        # Приоритет 1: file_id (новый формат)
+                        if m.get("file_id"):
+                            file_id = m["file_id"]
+                            logging.debug(f"[SEND_POST] Использую file_id: {file_id}")
+                            if m["type"] == "photo":
+                                await bot.send_photo(chat_id=channel_id, photo=file_id, caption=text)
+                            elif m["type"] == "video":
+                                await bot.send_video(chat_id=channel_id, video=file_id, caption=text)
+                            elif m["type"] == "document":
+                                await bot.send_document(chat_id=channel_id, document=file_id, caption=text)
+                            logging.info(f"[BOT] Медиа успешно отправлено по file_id (одиночное)")
+                        # Приоритет 2: local_path (старый формат)
+                        elif m.get("local_path"):
+                            local_path = m["local_path"]
+                            logging.debug(f"[SEND_POST] Проверяю наличие файла: {local_path}")
+                            if not os.path.exists(local_path):
+                                logging.error(f"[BOT] Файл не найден: {local_path}")
+                                return False
+                            input_file = FSInputFile(local_path)
+                            logging.debug(f"[SEND_POST] input_file создан: {input_file}")
+                            if m["type"] == "photo":
+                                await bot.send_photo(chat_id=channel_id, photo=input_file, caption=text)
+                            elif m["type"] == "video":
+                                await bot.send_video(chat_id=channel_id, video=input_file, caption=text)
+                            elif m["type"] == "document":
+                                await bot.send_document(chat_id=channel_id, document=input_file, caption=text)
+                            logging.info(f"[BOT] Медиа успешно отправлено (одиночное)")
+                            if redis:
+                                try:
+                                    count = await redis.decr(f"file:{local_path}")
+                                    logging.debug(f"[REDIS] DECR file:{local_path} -> {count}")
+                                    if count == 0:
+                                        await redis.set(f'delete_after:{local_path}', 1, ex=3600)
+                                        await redis.delete(f"file:{local_path}")
+                                        logging.info(f"[BOT] Файл {local_path} помечен на удаление через 1 час (refcount=0)")
+                                    else:
+                                        logging.info(f"[BOT] Файл {local_path} ещё нужен {count} каналам")
+                                except Exception as e:
+                                    logging.warning(f"[BOT] Ошибка reference counting для {local_path}: {e}\n{traceback.format_exc()}")
                     except Exception as e:
                         if hasattr(e, 'retry_after'):
                             logging.warning(f"[FLOODWAIT][DETAILS] Exception: {e} | retry_after={getattr(e, 'retry_after', None)} | type={type(e)} | args={e.args}")
@@ -135,24 +155,36 @@ async def send_post(bot, channel_id, post, redis=None, max_retries=5, _attempt=1
                     try:
                         for i, m in enumerate(media):
                             caption_ = text if i == 0 else None
-                            local_path = m["local_path"]
-                            logging.debug(f"[SEND_POST] Проверяю наличие файла: {local_path}")
-                            if not os.path.exists(local_path):
-                                logging.error(f"[BOT] Файл не найден: {local_path}")
-                                continue
-                            local_paths.append(local_path)
-                            input_file = FSInputFile(local_path)
-                            logging.debug(f"[SEND_POST] input_file создан: {input_file}")
-                            if m["type"] == "photo":
-                                group.append(InputMediaPhoto(media=input_file, caption=caption_))
-                            elif m["type"] == "video":
-                                group.append(InputMediaVideo(media=input_file, caption=caption_))
-                            elif m["type"] == "document":
-                                group.append(InputMediaDocument(media=input_file, caption=caption_))
+                            # Приоритет 1: file_id (новый формат)
+                            if m.get("file_id"):
+                                file_id = m["file_id"]
+                                logging.debug(f"[SEND_POST] Использую file_id для медиагруппы: {file_id}")
+                                if m["type"] == "photo":
+                                    group.append(InputMediaPhoto(media=file_id, caption=caption_))
+                                elif m["type"] == "video":
+                                    group.append(InputMediaVideo(media=file_id, caption=caption_))
+                                elif m["type"] == "document":
+                                    group.append(InputMediaDocument(media=file_id, caption=caption_))
+                            # Приоритет 2: local_path (старый формат)
+                            elif m.get("local_path"):
+                                local_path = m["local_path"]
+                                logging.debug(f"[SEND_POST] Проверяю наличие файла: {local_path}")
+                                if not os.path.exists(local_path):
+                                    logging.error(f"[BOT] Файл не найден: {local_path}")
+                                    continue
+                                local_paths.append(local_path)
+                                input_file = FSInputFile(local_path)
+                                logging.debug(f"[SEND_POST] input_file создан: {input_file}")
+                                if m["type"] == "photo":
+                                    group.append(InputMediaPhoto(media=input_file, caption=caption_))
+                                elif m["type"] == "video":
+                                    group.append(InputMediaVideo(media=input_file, caption=caption_))
+                                elif m["type"] == "document":
+                                    group.append(InputMediaDocument(media=input_file, caption=caption_))
                         logging.debug(f"[SEND_POST] Отправляю медиа-группу: {group}")
                         await bot.send_media_group(chat_id=channel_id, media=group)
                         logging.info(f"[BOT] Медиа-группа успешно отправлена")
-                        if redis:
+                        if redis and local_paths:
                             for local_path in local_paths:
                                 try:
                                     count = await redis.decr(f"file:{local_path}")

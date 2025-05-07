@@ -13,7 +13,7 @@ from config_loader import KAFKA_RAW_TOPIC
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError, SessionPasswordNeededError, PhoneCodeInvalidError, UserNotParticipantError, ChannelPrivateError, InviteHashInvalidError
 from telethon.tl.functions.messages import GetHistoryRequest
-from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument, MessageMediaWebPage, MessageMediaContact, MessageMediaGeo, MessageMediaPoll
+from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument, MessageMediaWebPage, MessageMediaContact, MessageMediaGeo, MessageMediaPoll, User, Channel, Chat
 import logging
 from datetime import datetime, timezone, timedelta
 from redis.asyncio import Redis
@@ -25,6 +25,9 @@ from task_queue_manager import TaskQueueManager
 import secrets
 import glob
 import time
+import re
+from cachetools import LRUCache
+from telethon.utils import pack_bot_file_id
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -77,7 +80,18 @@ class ParserCore:
         os.makedirs(self.temp_dir, exist_ok=True)
         self.channels = []
         self.task_queue = TaskQueueManager(num_workers=5)
-        self.entity_cache = {}  # in-memory cache
+        self.entity_cache = LRUCache(maxsize=1000)  # LRU in-memory cache
+        self.entity_queue = asyncio.Queue()
+        self.entity_futures = {}
+        self.entity_worker_started = False
+        self.entity_redis_ttl = 7 * 24 * 60 * 60  # 7 дней
+        # Черный список каналов (не обрабатываем)
+        self.blacklisted_channels = [
+            "razdazhawbozon2",
+            "Childrens_cashback", 
+            "razdachaottani"
+        ]
+        self.logger.info(f"Инициализирован черный список каналов: {self.blacklisted_channels}")
 
     async def load_channels_from_db(self):
         self.channels = await self.state.get_all_usernames()
@@ -188,8 +202,11 @@ class ParserCore:
             await self.kafka.start()
             await self.task_queue.start()
             await self.load_channels_from_db()
+            # Загружаем черный список каналов из Redis
+            await self.load_blacklisted_channels()
             self.is_running = True
             self.logger.info(f"Parser started with {len(self.channels)} channels configured (из базы)")
+            self.logger.info(f"Черный список содержит {len(self.blacklisted_channels)} каналов")
 
             if not self.channels:
                 self.logger.warning("No channels configured! Please check telegram_entities table in Postgres")
@@ -273,105 +290,266 @@ class ParserCore:
                 self.logger.critical(f"[RUN] Критическая ошибка в основном цикле: {e}\n{traceback.format_exc()}")
                 await asyncio.sleep(10)
 
+    async def entity_resolver_worker(self):
+        while True:
+            username_or_invite, fut = await self.entity_queue.get()
+            key = (username_or_invite['type'], username_or_invite['value'])
+            try:
+                # Кэш проверяем ещё раз (мог появиться за время ожидания)
+                if key in self.entity_cache:
+                    fut.set_result(self.entity_cache[key])
+                else:
+                    redis_key = f"entity_type:{key[0]}:{key[1]}"
+                    redis_result = await self.redis.get(redis_key)
+                    if redis_result:
+                        result = redis_result.decode()
+                        self.entity_cache[key] = result
+                        fut.set_result(result)
+                    else:
+                        if username_or_invite['type'] == 'invite':
+                            result = 'channel'
+                        else:
+                            try:
+                                entity = await self.client.get_entity(username_or_invite['value'])
+                                from telethon.tl.types import User, Channel, Chat
+                                if isinstance(entity, User):
+                                    result = 'user'
+                                elif isinstance(entity, (Channel, Chat)):
+                                    result = 'channel'
+                                else:
+                                    result = 'unknown'
+                            except Exception as e:
+                                self.logger.warning(f"[LINK_FILTER][QUEUE] Не удалось разрешить {username_or_invite['value']}: {e}")
+                                result = 'unknown'
+                        self.entity_cache[key] = result
+                        await self.redis.set(redis_key, result, ex=self.entity_redis_ttl)
+                        fut.set_result(result)
+            except Exception as e:
+                fut.set_result('unknown')
+            await asyncio.sleep(5)  # Rate limit: 1 запрос в 5 секунд
+
+    async def resolve_entity_type_queued(self, username_or_invite):
+        key = (username_or_invite['type'], username_or_invite['value'])
+        # 1. In-memory LRU cache
+        if key in self.entity_cache:
+            return self.entity_cache[key]
+        # 2. Redis cache
+        redis_key = f"entity_type:{key[0]}:{key[1]}"
+        redis_result = await self.redis.get(redis_key)
+        if redis_result:
+            result = redis_result.decode()
+            self.entity_cache[key] = result
+            return result
+        # 3. Очередь
+        if key in self.entity_futures:
+            return await self.entity_futures[key]
+        loop = asyncio.get_event_loop()
+        fut = loop.create_future()
+        self.entity_futures[key] = fut
+        await self.entity_queue.put((username_or_invite, fut))
+        result = await fut
+        self.entity_futures.pop(key, None)
+        return result
+
     async def process_message_handler(self, task):
+        def extract_telegram_links(text):
+            if not text:
+                return []
+            url_pattern = r"https?://t\.me/([a-zA-Z0-9_]+|\+[^\s/]+|joinchat/[^\s/]+)"
+            at_pattern = r"(?<!\w)@([a-zA-Z0-9_]{5,32})"
+            urls = re.findall(url_pattern, text)
+            ats = re.findall(at_pattern, text)
+            links = []
+            for u in urls:
+                if u.startswith('+') or u.startswith('joinchat/'):
+                    links.append({'type': 'invite', 'value': u})
+                else:
+                    links.append({'type': 'username', 'value': u})
+            for a in ats:
+                links.append({'type': 'username', 'value': a})
+            return links
+
+        # --- Фильтрация ссылок перед отправкой в Kafka ---
+        if not self.entity_worker_started:
+            asyncio.create_task(self.entity_resolver_worker())
+            self.entity_worker_started = True
+            
+        # Проверяем наличие медиа в сообщении
+        if task.get("type") == "process_album":
+            msgs = task["messages"]
+            # В альбоме всегда есть медиа, можно продолжать
+        else:
+            msg = task["message"]
+            # Проверка для одиночного сообщения - обрабатываем только с медиа
+            if not hasattr(msg, 'media') or not msg.media:
+                self.logger.info(f"[MEDIA_FILTER] Сообщение не содержит медиа, пропускаем. ID: {getattr(msg, 'id', 'unknown')}")
+                return
+                
+        if task.get("type") == "process_album":
+            msgs = task["messages"]
+            text = msgs[0].message if msgs and hasattr(msgs[0], 'message') else ''
+        else:
+            msg = task["message"]
+            text = msg.message if msg and hasattr(msg, 'message') else ''
+
+        links = extract_telegram_links(text)
+        # 1. Если в посте нет ссылок — отбрасываем
+        if not links:
+            self.logger.info(f"[LINK_FILTER] Пост не содержит ссылок, отбрасывается. text={text}")
+            return
+        user_links = []
+        channel_links = []
+        for l in links:
+            # Кэш проверяется внутри resolve_entity_type_queued, но явно проверяем здесь для читаемости
+            t = await self.resolve_entity_type_queued(l)
+            if t == 'user':
+                user_links.append(l)
+            elif t == 'channel':
+                channel_links.append(l)
+        if user_links and not channel_links:
+            pass
+        elif user_links and channel_links:
+            for l in channel_links:
+                if l['type'] == 'invite':
+                    text = re.sub(rf'https?://t\.me/{re.escape(l["value"])}', '', text)
+                elif l['type'] == 'username':
+                    text = re.sub(rf'https?://t\.me/{re.escape(l["value"])}', '', text)
+                    text = re.sub(rf'(?<!\w)@{re.escape(l["value"])}', '', text)
+            if task.get("type") == "process_album":
+                msgs[0].message = text
+            else:
+                msg.message = text
+        elif channel_links and not user_links:
+            self.logger.info(f"[LINK_FILTER] Пост содержит только ссылки на каналы/группы, не отправляем дальше. text={text}")
+            return
+        
+        # ОБРАБОТКА АЛЬБОМОВ (МЕДИАГРУПП)
         if task.get("type") == "process_album":
             channel = task["channel"]
             msgs = task["messages"]
             try:
-                self.logger.info(f"[PROCESS][ALBUM][START] Обработка альбома {getattr(msgs[0], 'grouped_id', 'unknown')} для {channel}, сообщений: {len(msgs)}")
+                self.logger.info(f"[PROCESS][ALBUM][START] Обработка альбома в канале {channel}, {len(msgs)} сообщений")
                 start_total = time.time()
-                media_list = []
-                import time as _time
-                # Сортируем сообщения по id (обычно порядок фото в альбоме)
-                msgs_sorted = sorted(msgs, key=lambda m: m.id)
-                # Логируем содержимое temp_dir до скачивания
-                try:
-                    files_dir = os.listdir(self.temp_dir)
-                    self.logger.info(f"[DEBUG][ALBUM] Содержимое {self.temp_dir} до скачивания: {files_dir}")
-                except Exception as e:
-                    self.logger.error(f"[DEBUG][ALBUM] Ошибка при логировании содержимого temp_dir: {e}")
-                # Скачиваем все медиа
-                for idx, msg in enumerate(msgs_sorted):
-                    if msg.media:
-                        start_media = _time.time()
-                        if isinstance(msg.media, MessageMediaPhoto):
-                            unique_id = secrets.token_hex(8)
-                            file_path = os.path.join(self.temp_dir, f"{msg.id}_{unique_id}_photo")
-                            try:
-                                self.logger.info(f"[PROCESS][ALBUM][PHOTO] Скачивание media для {channel} #{msg.id}")
-                                downloaded_path = await self.client.download_media(msg, file=file_path)
-                                if downloaded_path and os.path.exists(downloaded_path):
-                                    file_size = os.path.getsize(downloaded_path)
-                                    self.logger.info(f"[PROCESS][ALBUM][PHOTO] Файл скачан: {downloaded_path}, размер: {file_size} байт")
-                                    media_list.append({
-                                        "type": "photo",
-                                        "local_path": downloaded_path,
-                                        "caption": msg.message if idx == 0 else ""  # подпись только у первого
-                                    })
-                                else:
-                                    self.logger.error(f"[PROCESS][ALBUM][PHOTO] Файл не найден после скачивания: {downloaded_path}")
-                            except Exception as e:
-                                self.logger.error(f"[PROCESS][ALBUM][PHOTO] Ошибка: {e}\n{traceback.format_exc()}")
-                        elif isinstance(msg.media, MessageMediaDocument):
-                            unique_id = secrets.token_hex(8)
-                            file_path = os.path.join(self.temp_dir, f"{msg.id}_{unique_id}_document")
-                            try:
-                                self.logger.info(f"[PROCESS][ALBUM][DOC] Скачивание media для {channel} #{msg.id}")
-                                downloaded_path = await self.client.download_media(msg, file=file_path)
-                                if downloaded_path and os.path.exists(downloaded_path):
-                                    file_size = os.path.getsize(downloaded_path)
-                                    doc = msg.document
-                                    mime = doc.mime_type if hasattr(doc, 'mime_type') else None
-                                    size = doc.size if hasattr(doc, 'size') else None
-                                    media_type = "document"
-                                    if mime:
-                                        if mime.startswith("video"):
-                                            media_type = "video"
-                                        elif mime.startswith("audio"):
-                                            media_type = "audio"
-                                        elif mime == "application/x-tgsticker":
-                                            media_type = "sticker"
-                                        elif mime == "image/webp":
-                                            media_type = "sticker"
-                                        elif mime == "image/gif":
-                                            media_type = "animation"
-                                    media_list.append({
-                                        "type": media_type,
-                                        "local_path": downloaded_path,
-                                        "mime_type": mime,
-                                        "size": size,
-                                        "caption": msg.message if idx == 0 else ""
-                                    })
-                                else:
-                                    self.logger.error(f"[PROCESS][ALBUM][DOC] Файл не найден после скачивания: {downloaded_path}")
-                            except Exception as e:
-                                self.logger.error(f"[PROCESS][ALBUM][DOC] Ошибка: {e}\n{traceback.format_exc()}")
-                # Формируем payload и отправляем в Kafka
-                start_payload = _time.time()
-                data = {
+                album_data = {
                     'channel': channel,
-                    'id': msgs_sorted[0].id,
-                    'date': msgs_sorted[0].date.isoformat() if msgs_sorted[0].date else '',
-                    'text': msgs_sorted[0].message or '',
-                    'media': media_list
+                    'id': msgs[0].id if msgs else 0,
+                    'date': (msgs[0].date.isoformat() if hasattr(msgs[0], 'date') else '') if msgs else '',
+                    'text': msgs[0].message if msgs and hasattr(msgs[0], 'message') else '',
+                    'media': [],
+                    'is_album': True,
+                    'grouped_id': msgs[0].grouped_id if msgs and hasattr(msgs[0], 'grouped_id') else None
                 }
-                self.logger.info(f"[PROCESS][ALBUM][KAFKA] Payload для отправки: {json.dumps(data, ensure_ascii=False)[:500]}")
+                
+                # Обработка каждого сообщения в альбоме для получения file_id или скачивания
+                for msg in msgs:
+                    if msg.media:
+                        try:
+                            media_obj = None
+                            media_type = None
+                            caption = msg.message or ""
+                            mime = None
+                            size = None
+                            
+                            # Определение типа медиа и объекта
+                            if hasattr(msg, 'photo') and msg.photo:
+                                media_obj = msg.photo
+                                media_type = "photo"
+                            elif hasattr(msg, 'document') and msg.document:
+                                media_obj = msg.document
+                                doc = msg.document
+                                mime = doc.mime_type if hasattr(doc, 'mime_type') else None
+                                size = doc.size if hasattr(doc, 'size') else None
+                                # Определяем тип по mime
+                                if mime:
+                                    if mime.startswith("video"):
+                                        media_type = "video"
+                                    elif mime.startswith("audio"):
+                                        media_type = "audio"
+                                    elif mime == "application/x-tgsticker":
+                                        media_type = "sticker"
+                                    elif mime == "image/webp":
+                                        media_type = "sticker"
+                                    elif mime == "image/gif":
+                                        media_type = "animation"
+                                    else:
+                                        media_type = "document"
+                                else:
+                                    media_type = "document"
+                                
+                            # Пробуем получить file_id
+                            if media_obj is not None:
+                                try:
+                                    file_id = pack_bot_file_id(media_obj)
+                                    media_item = {
+                                        "type": media_type,
+                                        "file_id": file_id,
+                                        "caption": caption
+                                    }
+                                    if mime:
+                                        media_item["mime_type"] = mime
+                                    if size:
+                                        media_item["size"] = size
+                                    album_data['media'].append(media_item)
+                                    self.logger.info(f"[PROCESS][ALBUM] Получен file_id для {channel} #{msg.id}: {file_id} (type={media_type})")
+                                except Exception as e:
+                                    self.logger.error(f"[PROCESS][ALBUM] Не удалось получить file_id: {e}, fallback на скачивание")
+                                    # Fallback на скачивание, если file_id получить не удалось
+                                    unique_id = secrets.token_hex(8)
+                                    file_path = os.path.join(self.temp_dir, f"{msg.id}_{unique_id}_{media_type or 'media'}")
+                                    try:
+                                        downloaded_path = await self.client.download_media(msg, file=file_path)
+                                        if downloaded_path and os.path.exists(downloaded_path):
+                                            media_item = {
+                                                "type": media_type or "media",
+                                                "local_path": downloaded_path,
+                                                "caption": caption
+                                            }
+                                            if mime:
+                                                media_item["mime_type"] = mime
+                                            if size:
+                                                media_item["size"] = size
+                                            album_data['media'].append(media_item)
+                                    except Exception as e2:
+                                        self.logger.error(f"[PROCESS][ALBUM][FALLBACK] Ошибка: {e2}")
+                            # Поддержка других типов медиа (контакты, гео и т.д.) для полноты
+                            elif isinstance(msg.media, MessageMediaContact):
+                                album_data['media'].append({
+                                    "type": "contact",
+                                    "phone": msg.media.phone_number,
+                                    "first_name": msg.media.first_name,
+                                    "last_name": msg.media.last_name
+                                })
+                            elif isinstance(msg.media, MessageMediaGeo):
+                                geo = msg.media.geo
+                                album_data['media'].append({
+                                    "type": "geo",
+                                    "lat": geo.lat,
+                                    "long": geo.long
+                                })
+                            elif isinstance(msg.media, MessageMediaPoll):
+                                poll = msg.media.poll
+                                album_data['media'].append({
+                                    "type": "poll",
+                                    "question": poll.question,
+                                    "answers": [a.text for a in poll.answers]
+                                })
+                        except Exception as e:
+                            self.logger.error(f"[PROCESS][ALBUM] Ошибка обработки медиа в альбоме: {e}\n{traceback.format_exc()}")
+                
+                # Отправка альбома в Kafka
+                self.logger.info(f"[PROCESS][ALBUM] Отправка альбома в Kafka: {len(album_data['media'])} медиа")
                 try:
-                    await async_backoff(self.kafka.send, data, logger=self.logger)
-                    self.logger.info(f"[PROCESS][ALBUM][KAFKA] Альбом отправлен: {channel} #{msgs_sorted[0].id} (медиа: {len(media_list)})")
+                    await async_backoff(self.kafka.send, album_data, logger=self.logger)
+                    self.logger.info(f"[PROCESS][ALBUM] Альбом отправлен в Kafka, {len(album_data['media'])} медиа")
                 except Exception as e:
-                    self.logger.error(f"[PROCESS][ALBUM][KAFKA] Ошибка отправки альбома в Kafka: {e}\n{traceback.format_exc()}")
-                self.logger.info(f"[PROCESS][ALBUM][KAFKA] Время формирования и отправки payload: {_time.time() - start_payload:.2f} сек")
-                # Логируем содержимое temp_dir после отправки
-                try:
-                    files_dir = os.listdir(self.temp_dir)
-                    self.logger.info(f"[DEBUG][ALBUM] Содержимое {self.temp_dir} после отправки: {files_dir}")
-                except Exception as e:
-                    self.logger.error(f"[DEBUG][ALBUM] Ошибка при логировании содержимого temp_dir: {e}")
-                self.logger.info(f"[PROCESS][ALBUM][END] Обработка альбома {getattr(msgs[0], 'grouped_id', 'unknown')} завершена за {time.time() - start_total:.2f} сек")
+                    self.logger.error(f"[PROCESS][ALBUM] Ошибка отправки альбома в Kafka: {e}\n{traceback.format_exc()}")
+                
+                self.logger.info(f"[PROCESS][ALBUM][END] Обработка альбома завершена за {time.time() - start_total:.2f} сек")
+                return
             except Exception as e:
-                self.logger.error(f"[PROCESS][ALBUM][FATAL] Ошибка обработки альбома {getattr(msgs[0], 'grouped_id', 'unknown')}: {e}\n{traceback.format_exc()}")
-            return
+                self.logger.error(f"[PROCESS][ALBUM][FATAL] Ошибка обработки альбома: {e}\n{traceback.format_exc()}")
+                return
+            
         # Обычная обработка одиночного сообщения
         channel = task["channel"]
         msg = task["message"]
@@ -391,98 +569,99 @@ class ParserCore:
             # Скачивание и загрузка медиа
             if msg.media:
                 start_media = _time.time()
-                if isinstance(msg.media, MessageMediaPhoto):
-                    unique_id = secrets.token_hex(8)
-                    file_path = os.path.join(self.temp_dir, f"{msg.id}_{unique_id}_photo")
-                    try:
-                        self.logger.info(f"[PROCESS][PHOTO] Начало скачивания media для {channel} #{msg.id}")
-                        downloaded_path = await self.client.download_media(msg, file=file_path)
-                        self.logger.info(f"[PROCESS][PHOTO] Скачивание завершено для {channel} #{msg.id}, путь: {downloaded_path}")
-                        if downloaded_path and os.path.exists(downloaded_path):
-                            file_size = os.path.getsize(downloaded_path)
-                            self.logger.info(f"[PROCESS][PHOTO] Файл скачан: {downloaded_path}, размер: {file_size} байт")
-                            media_list.append({
-                                "type": "photo",
-                                "local_path": downloaded_path,
-                                "caption": msg.message or ""
-                            })
+                # Универсальная обработка медиа
+                try:
+                    media_obj = None
+                    media_type = None
+                    caption = msg.message or ""
+                    mime = None
+                    size = None
+                    # Определяем тип медиа и объект
+                    if hasattr(msg, 'photo') and msg.photo:
+                        media_obj = msg.photo
+                        media_type = "photo"
+                    elif hasattr(msg, 'document') and msg.document:
+                        media_obj = msg.document
+                        doc = msg.document
+                        mime = doc.mime_type if hasattr(doc, 'mime_type') else None
+                        size = doc.size if hasattr(doc, 'size') else None
+                        # Определяем тип по mime
+                        if mime:
+                            if mime.startswith("video"):
+                                media_type = "video"
+                            elif mime.startswith("audio"):
+                                media_type = "audio"
+                            elif mime == "application/x-tgsticker":
+                                media_type = "sticker"
+                            elif mime == "image/webp":
+                                media_type = "sticker"
+                            elif mime == "image/gif":
+                                media_type = "animation"
+                            else:
+                                media_type = "document"
                         else:
-                            self.logger.error(f"[PROCESS][PHOTO] Файл не найден после скачивания: {downloaded_path}")
-                            try:
-                                files_dir = os.listdir(self.temp_dir)
-                                perms = oct(os.stat(self.temp_dir).st_mode)
-                                self.logger.error(f"[PROCESS][PHOTO] Содержимое {self.temp_dir}: {files_dir}, права: {perms}")
-                            except Exception as e:
-                                self.logger.error(f"[PROCESS][PHOTO] Ошибка при логировании содержимого temp_dir: {e}")
-                    except Exception as e:
-                        self.logger.error(f"[PROCESS][PHOTO] Ошибка: {e}\n{traceback.format_exc()}")
-                elif isinstance(msg.media, MessageMediaDocument):
-                    unique_id = secrets.token_hex(8)
-                    file_path = os.path.join(self.temp_dir, f"{msg.id}_{unique_id}_document")
-                    try:
-                        self.logger.info(f"[PROCESS][DOC] Начало скачивания media для {channel} #{msg.id}")
-                        downloaded_path = await self.client.download_media(msg, file=file_path)
-                        self.logger.info(f"[PROCESS][DOC] Скачивание завершено для {channel} #{msg.id}, путь: {downloaded_path}")
-                        if downloaded_path and os.path.exists(downloaded_path):
-                            file_size = os.path.getsize(downloaded_path)
-                            self.logger.info(f"[PROCESS][DOC] Файл скачан: {downloaded_path}, размер: {file_size} байт")
-                            doc = msg.document
-                            mime = doc.mime_type if hasattr(doc, 'mime_type') else None
-                            size = doc.size if hasattr(doc, 'size') else None
                             media_type = "document"
-                            if mime:
-                                if mime.startswith("video"):
-                                    media_type = "video"
-                                elif mime.startswith("audio"):
-                                    media_type = "audio"
-                                elif mime == "application/x-tgsticker":
-                                    media_type = "sticker"
-                                elif mime == "image/webp":
-                                    media_type = "sticker"
-                                elif mime == "image/gif":
-                                    media_type = "animation"
-                            media_list.append({
+                    # Пробуем получить file_id для любого медиа
+                    if media_obj is not None:
+                        try:
+                            file_id = pack_bot_file_id(media_obj)
+                            media_item = {
                                 "type": media_type,
-                                "local_path": downloaded_path,
-                                "mime_type": mime,
-                                "size": size,
-                                "caption": msg.message or ""
-                            })
-                        else:
-                            self.logger.error(f"[PROCESS][DOC] Файл не найден после скачивания: {downloaded_path}")
+                                "file_id": file_id,
+                                "caption": caption
+                            }
+                            if mime:
+                                media_item["mime_type"] = mime
+                            if size:
+                                media_item["size"] = size
+                            media_list.append(media_item)
+                            self.logger.info(f"[PROCESS][MEDIA] Получен file_id для {channel} #{msg.id}: {file_id} (type={media_type})")
+                        except Exception as e:
+                            self.logger.error(f"[PROCESS][MEDIA] Не удалось получить file_id: {e}, fallback на скачивание")
+                            unique_id = secrets.token_hex(8)
+                            file_path = os.path.join(self.temp_dir, f"{msg.id}_{unique_id}_{media_type or 'media'}")
                             try:
-                                files_dir = os.listdir(self.temp_dir)
-                                perms = oct(os.stat(self.temp_dir).st_mode)
-                                self.logger.error(f"[PROCESS][DOC] Содержимое {self.temp_dir}: {files_dir}, права: {perms}")
-                            except Exception as e:
-                                self.logger.error(f"[PROCESS][DOC] Ошибка при логировании содержимого temp_dir: {e}")
-                    except Exception as e:
-                        self.logger.error(f"[PROCESS][DOC] Ошибка: {e}\n{traceback.format_exc()}")
-                elif isinstance(msg.media, MessageMediaContact):
-                    self.logger.info(f"[PROCESS][CONTACT] Обработка контакта для {channel} #{msg.id}")
-                    media_list.append({
-                        "type": "contact",
-                        "phone": msg.media.phone_number,
-                        "first_name": msg.media.first_name,
-                        "last_name": msg.media.last_name
-                    })
-                elif isinstance(msg.media, MessageMediaGeo):
-                    self.logger.info(f"[PROCESS][GEO] Обработка геолокации для {channel} #{msg.id}")
-                    geo = msg.media.geo
-                    media_list.append({
-                        "type": "geo",
-                        "lat": geo.lat,
-                        "long": geo.long
-                    })
-                elif isinstance(msg.media, MessageMediaPoll):
-                    self.logger.info(f"[PROCESS][POLL] Обработка опроса для {channel} #{msg.id}")
-                    poll = msg.media.poll
-                    media_list.append({
-                        "type": "poll",
-                        "question": poll.question,
-                        "answers": [a.text for a in poll.answers]
-                    })
-                self.logger.info(f"[PROCESS][MEDIA] Время обработки медиа: {_time.time() - start_media:.2f} сек")
+                                downloaded_path = await self.client.download_media(msg, file=file_path)
+                                if downloaded_path and os.path.exists(downloaded_path):
+                                    media_item = {
+                                        "type": media_type or "media",
+                                        "local_path": downloaded_path,
+                                        "caption": caption
+                                    }
+                                    if mime:
+                                        media_item["mime_type"] = mime
+                                    if size:
+                                        media_item["size"] = size
+                                    media_list.append(media_item)
+                            except Exception as e2:
+                                self.logger.error(f"[PROCESS][MEDIA][FALLBACK] Ошибка: {e2}")
+                    # Контакты, гео, опросы — как раньше
+                    elif isinstance(msg.media, MessageMediaContact):
+                        self.logger.info(f"[PROCESS][CONTACT] Обработка контакта для {channel} #{msg.id}")
+                        media_list.append({
+                            "type": "contact",
+                            "phone": msg.media.phone_number,
+                            "first_name": msg.media.first_name,
+                            "last_name": msg.media.last_name
+                        })
+                    elif isinstance(msg.media, MessageMediaGeo):
+                        self.logger.info(f"[PROCESS][GEO] Обработка геолокации для {channel} #{msg.id}")
+                        geo = msg.media.geo
+                        media_list.append({
+                            "type": "geo",
+                            "lat": geo.lat,
+                            "long": geo.long
+                        })
+                    elif isinstance(msg.media, MessageMediaPoll):
+                        self.logger.info(f"[PROCESS][POLL] Обработка опроса для {channel} #{msg.id}")
+                        poll = msg.media.poll
+                        media_list.append({
+                            "type": "poll",
+                            "question": poll.question,
+                            "answers": [a.text for a in poll.answers]
+                        })
+                except Exception as e:
+                    self.logger.error(f"[PROCESS][MEDIA][UNIVERSAL] Ошибка: {e}\n{traceback.format_exc()}")
             # Формируем payload и отправляем в Kafka
             start_payload = _time.time()
             data = {
@@ -512,6 +691,11 @@ class ParserCore:
     async def _process_channel(self, channel, semaphore):
         self.logger.info(f"[CHANNEL] Начало обработки: {channel}")
         
+        # Проверяем, находится ли канал в черном списке
+        if channel in self.blacklisted_channels:
+            self.logger.info(f"[CHANNEL] {channel} находится в черном списке, пропускаем")
+            return
+            
         # Проверим состояние очереди задач
         queue_stats = self.task_queue.get_stats()
         self.logger.info(f"[CHANNEL] Состояние очереди задач: {queue_stats}")
@@ -593,6 +777,11 @@ class ParserCore:
                 # Считаем количество задач, которые нужно отправить
                 tasks_to_add = 0
                 for msg in new_msgs:
+                    # Пропускаем сообщения без медиа
+                    if not hasattr(msg, 'media') or not msg.media:
+                        self.logger.info(f"[MEDIA_FILTER] Пропускаем сообщение без медиа {channel} #{msg.id}")
+                        continue
+                        
                     if not filter_message(msg.message or '', self.include, self.exclude):
                         continue
                     if hasattr(msg, 'grouped_id') and msg.grouped_id:
@@ -609,6 +798,10 @@ class ParserCore:
                 # 1. Сначала обрабатываем альбомы (grouped_id)
                 processed_albums = set()
                 for msg in new_msgs:
+                    # Пропускаем сообщения без медиа
+                    if not hasattr(msg, 'media') or not msg.media:
+                        continue
+                        
                     if not filter_message(msg.message or '', self.include, self.exclude):
                         continue
                     if hasattr(msg, 'grouped_id') and msg.grouped_id:
@@ -630,6 +823,10 @@ class ParserCore:
                         processed_albums.add(gid)
                 # 2. Одиночные сообщения (без grouped_id)
                 for msg in new_msgs:
+                    # Пропускаем сообщения без медиа
+                    if not hasattr(msg, 'media') or not msg.media:
+                        continue
+                        
                     if not filter_message(msg.message or '', self.include, self.exclude):
                         continue
                     if hasattr(msg, 'grouped_id') and msg.grouped_id:
@@ -678,6 +875,14 @@ class ParserCore:
 
     async def _notify_admin_not_member(self, channel, error):
         try:
+            # Проверяем, стоит ли добавить канал в черный список
+            if isinstance(error, (ChannelPrivateError)) and channel not in self.blacklisted_channels:
+                self.logger.warning(f"[BLACKLIST] Канал {channel} будет добавлен в черный список из-за ошибки: {error}")
+                self.blacklisted_channels.append(channel)
+                # Сохраняем черный список в Redis для персистентности между перезапусками
+                await self.redis.set("parser:blacklisted_channels", json.dumps(self.blacklisted_channels))
+                self.logger.info(f"[BLACKLIST] Обновленный черный список: {self.blacklisted_channels}")
+                
             alert = {
                 "type": "not_member",
                 "channel": str(channel),
@@ -688,6 +893,18 @@ class ParserCore:
             self.logger.info(f"[ALERT] Не член канала, уведомление админу отправлено: {alert}")
         except Exception as e:
             self.logger.error(f"Ошибка при отправке уведомления админу (not_member): {e}")
+
+    async def load_blacklisted_channels(self):
+        """Загружаем черный список каналов из Redis"""
+        try:
+            blacklist_json = await self.redis.get("parser:blacklisted_channels")
+            if blacklist_json:
+                self.blacklisted_channels = json.loads(blacklist_json)
+                self.logger.info(f"[BLACKLIST] Загружены {len(self.blacklisted_channels)} каналов из черного списка Redis")
+            else:
+                self.logger.info("[BLACKLIST] Черный список каналов не найден в Redis")
+        except Exception as e:
+            self.logger.error(f"[BLACKLIST] Ошибка при загрузке черного списка: {e}")
 
 async def main():
     # Подключение к Postgres и инициализация схемы
