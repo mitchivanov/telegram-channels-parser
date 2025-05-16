@@ -9,7 +9,7 @@ from db import SessionLocal
 from models import Filter
 import logging
 import redis.asyncio as aioredis
-from utils import extract_cashback_percent
+from utils import extract_cashback_percent, post_text_hash
 
 logging.basicConfig(
     level=logging.INFO,
@@ -161,6 +161,19 @@ async def kafka_filter_worker():
             async for msg in consumer:
                 logger.info(f"[KAFKA] Получено сообщение из топика {msg.topic}: {str(msg.value)[:100]}")
                 post = msg.value
+                # Проверка на 100% дублирование текста поста
+                text = ""
+                if post.get("media") and len(post["media"]) > 0:
+                    text = post["media"][0].get("caption", "")
+                if not text:
+                    text = post.get("text", "")
+                hash_val = post_text_hash(text)
+                hash_key = f"post_hash:{hash_val}"
+                is_duplicate = await redis.get(hash_key)
+                if is_duplicate:
+                    logger.info(f"[DUPLICATE] Найден дубликат поста по хешу {hash_val}, пропускаю обработку.")
+                    continue
+                await redis.set(hash_key, 1, ex=7*24*60*60)  # TTL 7 дней
                 # Сохраняем исходный канал для истории, если есть
                 if "channel" in post:
                     post["source_channel"] = post["channel"]

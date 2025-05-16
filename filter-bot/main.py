@@ -122,22 +122,22 @@ async def send_post_for_moderation(post: dict, message_id: str):
                         group.append(types.InputMediaDocument(media=input_file, caption=caption_))
             if group:
                 try:
-                    await bot.send_media_group(MODERATION_CHAT_ID, group)
+                    sent_msgs = await bot.send_media_group(MODERATION_CHAT_ID, group)
                     logger.info(f"[MODERATION_DETAILS] Медиагруппа успешно отправлена")
+                    # Сразу после медиагруппы отправляем отдельное сообщение с кнопками
+                    try:
+                        sent_msg = await bot.send_message(
+                            MODERATION_CHAT_ID,
+                            "<b>Пост на модерацию</b>",
+                            reply_markup=kb
+                        )
+                        logger.info(f"[MODERATION_DETAILS] Сообщение с кнопками успешно отправлено после медиагруппы")
+                    except Exception as e:
+                        logger.error(f"[MODERATION_DETAILS] Ошибка при отправке сообщения с кнопками после медиагруппы: {e}")
                 except Exception as e:
                     logger.error(f"[MODERATION_DETAILS] Ошибка при отправке медиагруппы: {e}")
             else:
                 logger.error(f"[MODERATION_DETAILS] Нет валидных медиа для отправки медиагруппы")
-            # Кнопки и текст после медиагруппы
-            try:
-                sent_msg = await bot.send_message(
-                    MODERATION_CHAT_ID,
-                    f"<b>Пост на модерацию:</b>{channel_info}\n{text}",
-                    reply_markup=kb
-                )
-                logger.info(f"[MODERATION_DETAILS] Сообщение с кнопками успешно отправлено")
-            except Exception as e:
-                logger.error(f"[MODERATION_DETAILS] Ошибка при отправке сообщения с кнопками: {e}")
     else:
         try:
             sent_msg = await bot.send_message(

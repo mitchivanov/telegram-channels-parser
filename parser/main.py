@@ -451,12 +451,12 @@ class ParserCore:
                             size = None
                             
                             # Определение типа медиа и объекта
-                            if hasattr(msg, 'photo') and msg.photo:
-                                media_obj = msg.photo
+                            if isinstance(msg.media, MessageMediaPhoto) and getattr(msg.media, 'photo', None):
+                                media_obj = msg.media.photo
                                 media_type = "photo"
-                            elif hasattr(msg, 'document') and msg.document:
-                                media_obj = msg.document
-                                doc = msg.document
+                            elif isinstance(msg.media, MessageMediaDocument) and getattr(msg.media, 'document', None):
+                                media_obj = msg.media.document
+                                doc = msg.media.document
                                 mime = doc.mime_type if hasattr(doc, 'mime_type') else None
                                 size = doc.size if hasattr(doc, 'size') else None
                                 # Определяем тип по mime
@@ -479,6 +479,7 @@ class ParserCore:
                             # Пробуем получить file_id
                             if media_obj is not None:
                                 try:
+                                    self.logger.info(f"[PROCESS][ALBUM] Attempting pack_bot_file_id for media_obj of type: {type(media_obj)}")
                                     file_id = pack_bot_file_id(media_obj)
                                     media_item = {
                                         "type": media_type,
@@ -492,7 +493,7 @@ class ParserCore:
                                     album_data['media'].append(media_item)
                                     self.logger.info(f"[PROCESS][ALBUM] Получен file_id для {channel} #{msg.id}: {file_id} (type={media_type})")
                                 except Exception as e:
-                                    self.logger.error(f"[PROCESS][ALBUM] Не удалось получить file_id: {e}, fallback на скачивание")
+                                    self.logger.error(f"[PROCESS][ALBUM] Не удалось получить file_id для media_obj типа {type(media_obj)}: {e}. Traceback: {traceback.format_exc()}", exc_info=False)
                                     # Fallback на скачивание, если file_id получить не удалось
                                     unique_id = secrets.token_hex(8)
                                     file_path = os.path.join(self.temp_dir, f"{msg.id}_{unique_id}_{media_type or 'media'}")
@@ -577,12 +578,12 @@ class ParserCore:
                     mime = None
                     size = None
                     # Определяем тип медиа и объект
-                    if hasattr(msg, 'photo') and msg.photo:
-                        media_obj = msg.photo
+                    if isinstance(msg.media, MessageMediaPhoto) and getattr(msg.media, 'photo', None):
+                        media_obj = msg.media.photo
                         media_type = "photo"
-                    elif hasattr(msg, 'document') and msg.document:
-                        media_obj = msg.document
-                        doc = msg.document
+                    elif isinstance(msg.media, MessageMediaDocument) and getattr(msg.media, 'document', None):
+                        media_obj = msg.media.document
+                        doc = msg.media.document
                         mime = doc.mime_type if hasattr(doc, 'mime_type') else None
                         size = doc.size if hasattr(doc, 'size') else None
                         # Определяем тип по mime
@@ -604,6 +605,7 @@ class ParserCore:
                     # Пробуем получить file_id для любого медиа
                     if media_obj is not None:
                         try:
+                            self.logger.info(f"[PROCESS][MEDIA] Attempting pack_bot_file_id for media_obj of type: {type(media_obj)}")
                             file_id = pack_bot_file_id(media_obj)
                             media_item = {
                                 "type": media_type,
@@ -617,7 +619,7 @@ class ParserCore:
                             media_list.append(media_item)
                             self.logger.info(f"[PROCESS][MEDIA] Получен file_id для {channel} #{msg.id}: {file_id} (type={media_type})")
                         except Exception as e:
-                            self.logger.error(f"[PROCESS][MEDIA] Не удалось получить file_id: {e}, fallback на скачивание")
+                            self.logger.error(f"[PROCESS][MEDIA] Не удалось получить file_id для media_obj типа {type(media_obj)}: {e}. Traceback: {traceback.format_exc()}", exc_info=False)
                             unique_id = secrets.token_hex(8)
                             file_path = os.path.join(self.temp_dir, f"{msg.id}_{unique_id}_{media_type or 'media'}")
                             try:
@@ -715,23 +717,67 @@ class ParserCore:
                     self.logger.error(f"[CHANNEL] Не удалось получить entity для {channel}, пропуск")
                     return
                 self.logger.info(f"[CHANNEL] Получен entity для {channel}: id={getattr(entity, 'id', 'None')}, title={getattr(entity, 'title', 'None')}")
-                last_id = await self.state.get_last_id(channel)
                 
+                last_id = await self.state.get_last_id(channel)
+
+                # --- NEW LOGIC FOR FIRST RUN ---
+                if last_id == 0:
+                    self.logger.info(f"[CHANNEL][FIRST_RUN] Канал {channel} обрабатывается впервые. Получение ID последнего сообщения для инициализации.")
+                    try:
+                        # Fetch only the latest message (or a few) to get its ID
+                        history_for_init = await async_backoff(
+                            self.client,
+                            GetHistoryRequest,
+                            peer=entity,
+                            limit=1, # Only need the very last message to set initial last_id
+                            offset_id=0,
+                            offset_date=None,
+                            add_offset=0,
+                            max_id=0,
+                            min_id=0,
+                            hash=0,
+                            logger=self.logger
+                        )
+                        if history_for_init and history_for_init.messages:
+                            latest_message_id = history_for_init.messages[0].id
+                            await self.state.set_last_id(channel, latest_message_id)
+                            self.logger.info(f"[CHANNEL][FIRST_RUN] Для канала {channel} установлен начальный last_id = {latest_message_id}. Сообщения с этой итерации обрабатываться не будут.")
+                        else:
+                            # No messages in the channel, last_id remains 0 (or whatever default)
+                            # It will be re-evaluated on the next cycle.
+                            self.logger.info(f"[CHANNEL][FIRST_RUN] В канале {channel} нет сообщений для инициализации last_id. last_id остается {last_id}.")
+                        return # Exit after initializing last_id for the first run, no processing this time.
+                    except FloodWaitError as e:
+                        self.logger.critical(f"[FLOODWAIT][FIRST_RUN_INIT] FloodWaitError при инициализации last_id для {channel}: {e.seconds} секунд. Трассировка: {traceback.format_exc()}")
+                        await self.global_floodwait.set(e.seconds)
+                        await self._notify_admin(channel, f"FloodWaitError (first run init for last_id): {e.seconds}s")
+                        return
+                    except (UserNotParticipantError, ChannelPrivateError, InviteHashInvalidError) as e:
+                        self.logger.error(f"[CHANNEL][FIRST_RUN_INIT] Ошибка доступа к {channel} при инициализации last_id: {type(e).__name__}: {e}. Трассировка: {traceback.format_exc()}")
+                        await self._notify_admin_not_member(channel, e) # Potentially blacklist
+                        return
+                    except Exception as e:
+                        self.logger.error(f"[CHANNEL][FIRST_RUN_INIT] Ошибка при получении последнего ID для инициализации {channel}: {e}\n{traceback.format_exc()}")
+                        # Не выходим глобально, просто этот канал будет пропущен в текущей итерации и попробует снова
+                        return
+                # --- END OF NEW LOGIC FOR FIRST RUN ---
+                
+                # Existing logic for subsequent runs (now last_id is guaranteed to be non-zero if messages existed)
                 try:
                     history = await async_backoff(
                         self.client,
                         GetHistoryRequest,
                         peer=entity,
-                        limit=10,
+                        limit=10, # Standard limit for normal operation
                         offset_id=0,
                         offset_date=None,
                         add_offset=0,
                         max_id=0,
-                        min_id=0,
+                        min_id=0, # We filter by m.id > last_id later, so min_id=0 is fine here.
                         hash=0,
                         logger=self.logger
                     )
-                    self.logger.info(f"[CHANNEL] Получена история для {channel}: {len(history.messages)} сообщений")
+                    self.logger.info(f"[CHANNEL] Получена история для {channel}: {len(history.messages)} сообщений (текущий last_id: {last_id})")
                 except FloodWaitError as e:
                     self.logger.critical(f"[FLOODWAIT] FloodWaitError для {channel}: {e.seconds} секунд ожидания. Трассировка: {traceback.format_exc()}")
                     await self.global_floodwait.set(e.seconds)

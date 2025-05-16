@@ -1,5 +1,6 @@
 import re
 from typing import List, Optional
+import hashlib
 
 def extract_cashback_percent(text: str) -> List[float]:
     """
@@ -57,4 +58,9 @@ def extract_cashback_percent(text: str) -> List[float]:
         percent = round(100 * (price_site - price_you) / price_site, 2)
         if 0 < percent <= 100:
             result.add(percent)
-    return sorted(result, reverse=True) 
+    return sorted(result, reverse=True)
+
+def post_text_hash(text: str) -> str:
+    """Возвращает SHA-256 хеш текста поста (без учёта регистра и лишних пробелов)."""
+    norm = ' '.join(text.lower().split())
+    return hashlib.sha256(norm.encode('utf-8')).hexdigest() 
