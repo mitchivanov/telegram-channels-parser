@@ -13,6 +13,7 @@ from loguru import logger
 import redis.asyncio as aioredis
 from dotenv import load_dotenv
 from aiogram.client.default import DefaultBotProperties
+import re
 
 load_dotenv()
 
@@ -152,7 +153,9 @@ async def send_post_for_moderation(post: dict, message_id: str):
         await redis.set(f"mod_msg:{sent_msg.message_id}", message_id, ex=3600)
     await redis.set(f"mod_post:{message_id}", json.dumps(post, ensure_ascii=False), ex=3600)
     await redis.set(f"moderation_status:{message_id}", "pending", ex=3600)
-    logger.info(f"[MODERATION_DETAILS] Обработка поста завершена, статус: pending")
+    # Новый ключ для автоудаления через 24 часа
+    await redis.set(f"mod_expire:{message_id}", 1, ex=24*3600)
+    logger.info(f"[MODERATION_DETAILS] Обработка поста завершена, статус: pending, установлен mod_expire на 24ч")
 
 @dp.callback_query(F.data.startswith("approve:"))
 async def approve_post(callback: CallbackQuery):
@@ -169,6 +172,39 @@ async def approve_post(callback: CallbackQuery):
 @dp.callback_query(F.data.startswith("reject:"))
 async def reject_post(callback: CallbackQuery):
     message_id = callback.data.split(":", 1)[1]
+    
+    # Получаем данные поста и обрабатываем счетчики модерации
+    post_json = await redis.get(f"mod_post:{message_id}")
+    if post_json:
+        try:
+            post = json.loads(post_json)
+            # Уменьшаем счетчики модерации для всех медиа-файлов в посте
+            for media_item in post.get("media", []):
+                if media_item.get("local_path") and os.path.exists(media_item["local_path"]):
+                    local_path = media_item["local_path"]
+                    try:
+                        # Уменьшаем счетчик модерации
+                        mod_count = await redis.decr(f"moderation:{local_path}")
+                        logger.info(f"[MODERATION_COUNTER] Уменьшен счетчик модерации для {local_path}: {mod_count} (отклонено)")
+                        
+                        # Если счетчик модерации достиг нуля, удаляем его
+                        if mod_count <= 0:
+                            await redis.delete(f"moderation:{local_path}")
+                            logger.info(f"[MODERATION_COUNTER] Счетчик модерации для {local_path} удален (достиг 0)")
+                            
+                            # Проверяем, есть ли еще счетчик file:*
+                            file_count = await redis.get(f"file:{local_path}")
+                            
+                            # Если нет счетчика file:* (или он 0), помечаем файл на удаление
+                            if not file_count or int(file_count) <= 0:
+                                # Помечаем на удаление через 5 минут
+                                await redis.set(f'delete_after:{local_path}', 1, ex=300)
+                                logger.info(f"[MODERATION_COUNTER] Файл {local_path} помечен на удаление через 5 минут (оба счетчика 0)")
+                    except Exception as e:
+                        logger.error(f"[MODERATION_COUNTER] Ошибка при декременте счетчика модерации для {local_path}: {e}")
+        except Exception as e:
+            logger.error(f"[MODERATION_COUNTER] Ошибка при обработке медиа в отклоненном посте: {e}")
+    
     await redis.set(f"moderation_status:{message_id}", "rejected", ex=3600)
     await callback.answer("Пост отклонён!")
     await callback.message.delete()
@@ -232,9 +268,68 @@ async def moderation_worker():
         else:
             await asyncio.sleep(1)
 
+async def moderation_expiry_worker():
+    global redis
+    logger.info("[EXPIRY] Запуск воркера автоудаления устаревших постов модерации...")
+    while True:
+        try:
+            keys = await redis.keys("mod_post:*")
+            logger.debug(f"[EXPIRY] Найдено {len(keys)} mod_post ключей для проверки")
+            for key in keys:
+                m = re.match(r"mod_post:(.+)", key if isinstance(key, str) else key.decode())
+                if not m:
+                    continue
+                message_id = m.group(1)
+                expire_key = f"mod_expire:{message_id}"
+                exists = await redis.exists(expire_key)
+                if exists:
+                    continue
+                # Ключа mod_expire нет — пост устарел, надо удалить
+                post_json = await redis.get(key)
+                logger.info(f"[EXPIRY] Пост {message_id} устарел (>24ч), удаляю из модерации")
+                if post_json:
+                    try:
+                        post = json.loads(post_json)
+                        # Уменьшаем reference counting для файлов, как при reject
+                        for media_item in post.get("media", []):
+                            if media_item.get("local_path") and os.path.exists(media_item["local_path"]):
+                                local_path = media_item["local_path"]
+                                try:
+                                    mod_count = await redis.decr(f"moderation:{local_path}")
+                                    logger.info(f"[EXPIRY][MODERATION_COUNTER] Уменьшен счётчик модерации для {local_path}: {mod_count} (auto-expire)")
+                                    if mod_count <= 0:
+                                        await redis.delete(f"moderation:{local_path}")
+                                        logger.info(f"[EXPIRY][MODERATION_COUNTER] Счётчик модерации для {local_path} удалён (0)")
+                                        file_count = await redis.get(f"file:{local_path}")
+                                        if not file_count or int(file_count) <= 0:
+                                            await redis.set(f'delete_after:{local_path}', 1, ex=300)
+                                            logger.info(f"[EXPIRY][MODERATION_COUNTER] Файл {local_path} помечен на удаление через 5 минут (оба счётчика 0)")
+                                except Exception as e:
+                                    logger.error(f"[EXPIRY][MODERATION_COUNTER] Ошибка при декременте счётчика для {local_path}: {e}")
+                    except Exception as e:
+                        logger.error(f"[EXPIRY] Ошибка при обработке медиа устаревшего поста: {e}")
+                # Удаляем все ключи, связанные с этим постом
+                await redis.delete(key)
+                await redis.delete(f"moderation_status:{message_id}")
+                # --- Удаление сообщения в Telegram ---
+                mod_msg_id = await redis.get(f"mod_msg:{message_id}")
+                await redis.delete(f"mod_msg:{message_id}")
+                if mod_msg_id:
+                    try:
+                        telegram_message_id = int(mod_msg_id.decode() if hasattr(mod_msg_id, 'decode') else mod_msg_id)
+                        await bot.delete_message(MODERATION_CHAT_ID, telegram_message_id)
+                        logger.info(f"[EXPIRY][TG] Сообщение {telegram_message_id} в Telegram удалено (auto-expire)")
+                    except Exception as e:
+                        logger.warning(f"[EXPIRY][TG] Не удалось удалить сообщение {mod_msg_id} в Telegram: {e}")
+                logger.info(f"[EXPIRY] Пост {message_id} и все связанные ключи удалены из модерации (auto-expire)")
+        except Exception as e:
+            logger.error(f"[EXPIRY] Ошибка в воркере автоудаления: {e}")
+        await asyncio.sleep(60)
+
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)
     asyncio.create_task(moderation_worker())
+    asyncio.create_task(moderation_expiry_worker())
     logger.info("[BOT] Бот запущен и готов к модерации!")
     await dp.start_polling(bot)
 

@@ -93,6 +93,25 @@ class ParserCore:
         ]
         self.logger.info(f"Инициализирован черный список каналов: {self.blacklisted_channels}")
 
+    async def cleanup_old_temp_files(self, max_age_hours=6):
+        """Удаляет временные файлы старше указанного возраста (в часах)"""
+        self.logger.info(f"[CLEANUP] Запуск очистки временных файлов старше {max_age_hours} часов")
+        try:
+            now = time.time()
+            count = 0
+            for file_path in glob.glob(os.path.join(self.temp_dir, "*")):
+                try:
+                    file_age = now - os.path.getmtime(file_path)
+                    if file_age > max_age_hours * 3600:  # Переводим часы в секунды
+                        os.remove(file_path)
+                        count += 1
+                        self.logger.debug(f"[CLEANUP] Удален старый файл: {file_path} (возраст: {file_age/3600:.2f} часов)")
+                except Exception as e:
+                    self.logger.warning(f"[CLEANUP] Ошибка при проверке/удалении файла {file_path}: {e}")
+            self.logger.info(f"[CLEANUP] Удалено {count} старых временных файлов")
+        except Exception as e:
+            self.logger.error(f"[CLEANUP] Ошибка при очистке временных файлов: {e}")
+
     async def load_channels_from_db(self):
         self.channels = await self.state.get_all_usernames()
         self.logger.info(f"Загружено {len(self.channels)} каналов из базы telegram_entities")
@@ -198,6 +217,9 @@ class ParserCore:
                 os.makedirs(session_dir)
                 self.logger.info(f"Created session directory: {session_dir}")
 
+            # Очистка старых временных файлов при запуске
+            await self.cleanup_old_temp_files(max_age_hours=6)
+
             await self._start_telethon()
             await self.kafka.start()
             await self.task_queue.start()
@@ -207,6 +229,9 @@ class ParserCore:
             self.is_running = True
             self.logger.info(f"Parser started with {len(self.channels)} channels configured (из базы)")
             self.logger.info(f"Черный список содержит {len(self.blacklisted_channels)} каналов")
+
+            # Запускаем периодическую очистку временных файлов (каждые 30 минут)
+            asyncio.create_task(self._start_periodic_cleanup(interval_minutes=30))
 
             if not self.channels:
                 self.logger.warning("No channels configured! Please check telegram_entities table in Postgres")
@@ -218,6 +243,14 @@ class ParserCore:
             self.logger.critical(f"Critical error during parser startup: {e}\n{traceback.format_exc()}")
             await self.stop()
             raise
+
+    async def _start_periodic_cleanup(self, interval_minutes=30):
+        """Запускает периодическую очистку временных файлов"""
+        self.logger.info(f"[CLEANUP] Запуск периодической очистки временных файлов каждые {interval_minutes} минут")
+        while self.is_running:
+            await asyncio.sleep(interval_minutes * 60)
+            if self.is_running:  # Проверяем снова, т.к. могло измениться за время сна
+                await self.cleanup_old_temp_files(max_age_hours=6)
 
     async def stop(self):
         self.is_running = False
@@ -544,6 +577,16 @@ class ParserCore:
                     self.logger.info(f"[PROCESS][ALBUM] Альбом отправлен в Kafka, {len(album_data['media'])} медиа")
                 except Exception as e:
                     self.logger.error(f"[PROCESS][ALBUM] Ошибка отправки альбома в Kafka: {e}\n{traceback.format_exc()}")
+                    # Очистка скачанных файлов при ошибке отправки в Kafka
+                    self.logger.info(f"[PROCESS][ALBUM][CLEANUP] Попытка очистки скачанных файлов альбома из-за ошибки отправки в Kafka.")
+                    for media_item_to_clean in album_data.get('media', []):
+                        local_path_album_clean = media_item_to_clean.get("local_path")
+                        if local_path_album_clean and os.path.exists(local_path_album_clean):
+                            try:
+                                os.remove(local_path_album_clean)
+                                self.logger.info(f"[PROCESS][ALBUM][CLEANUP] Удален временный файл: {local_path_album_clean}")
+                            except Exception as e_clean_album:
+                                self.logger.warning(f"[PROCESS][ALBUM][CLEANUP] Ошибка при удалении временного файла {local_path_album_clean}: {e_clean_album}")
                 
                 self.logger.info(f"[PROCESS][ALBUM][END] Обработка альбома завершена за {time.time() - start_total:.2f} сек")
                 return
@@ -679,6 +722,17 @@ class ParserCore:
                 self.logger.info(f"[PROCESS][KAFKA] Сообщение отправлено: {channel} #{msg.id} (медиа: {len(media_list)})")
             except Exception as e:
                 self.logger.error(f"[PROCESS][KAFKA] Ошибка отправки в Kafka: {e}\n{traceback.format_exc()}")
+                # Очистка скачанных файлов при ошибке отправки в Kafka
+                self.logger.info(f"[PROCESS][KAFKA][CLEANUP] Попытка очистки скачанных файлов сообщения из-за ошибки отправки в Kafka.")
+                for media_item_to_clean in media_list: # media_list содержит элементы с local_path
+                    local_path_msg_clean = media_item_to_clean.get("local_path")
+                    if local_path_msg_clean and os.path.exists(local_path_msg_clean):
+                        try:
+                            os.remove(local_path_msg_clean)
+                            self.logger.info(f"[PROCESS][KAFKA][CLEANUP] Удален временный файл: {local_path_msg_clean}")
+                        except Exception as e_clean_msg:
+                            self.logger.warning(f"[PROCESS][KAFKA][CLEANUP] Ошибка при удалении временного файла {local_path_msg_clean}: {e_clean_msg}")
+            
             self.logger.info(f"[PROCESS][KAFKA] Время формирования и отправки payload: {_time.time() - start_payload:.2f} сек")
             # Логируем содержимое temp_dir после отправки
             try:

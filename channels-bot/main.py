@@ -127,10 +127,10 @@ async def send_post(bot, channel_id, post, redis=None, max_retries=5, _attempt=1
                                 try:
                                     count = await redis.decr(f"file:{local_path}")
                                     logging.debug(f"[REDIS] DECR file:{local_path} -> {count}")
-                                    if count == 0:
-                                        await redis.set(f'delete_after:{local_path}', 1, ex=3600)
+                                    if count <= 0:
+                                        await redis.set(f'delete_after:{local_path}', 1, ex=60)
                                         await redis.delete(f"file:{local_path}")
-                                        logging.info(f"[BOT] Файл {local_path} помечен на удаление через 1 час (refcount=0)")
+                                        logging.info(f"[BOT] Файл {local_path} помечен на удаление через 1 минуту (refcount=0)")
                                     else:
                                         logging.info(f"[BOT] Файл {local_path} ещё нужен {count} каналам")
                                 except Exception as e:
@@ -189,10 +189,10 @@ async def send_post(bot, channel_id, post, redis=None, max_retries=5, _attempt=1
                                 try:
                                     count = await redis.decr(f"file:{local_path}")
                                     logging.debug(f"[REDIS] DECR file:{local_path} -> {count}")
-                                    if count == 0:
-                                        await redis.set(f'delete_after:{local_path}', 1, ex=3600)
+                                    if count <= 0:
+                                        await redis.set(f'delete_after:{local_path}', 1, ex=60)
                                         await redis.delete(f"file:{local_path}")
-                                        logging.info(f"[BOT] Файл {local_path} помечен на удаление через 1 час (refcount=0)")
+                                        logging.info(f"[BOT] Файл {local_path} помечен на удаление через 1 минуту (refcount=0)")
                                     else:
                                         logging.info(f"[BOT] Файл {local_path} ещё нужен {count} каналам")
                                 except Exception as e:

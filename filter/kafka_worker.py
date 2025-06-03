@@ -68,6 +68,19 @@ async def add_to_moderation_queue_redis(redis, post, target_channel):
             media_out.append(m)
         elif m.get("local_path") and os.path.exists(m["local_path"]):
             logger.info(f"[MODERATION_DETAIL] [{i}] Добавляю медиа с local_path: {m['local_path']}")
+            # Создаем или увеличиваем счетчик модерации для файла
+            local_path = m["local_path"]
+            try:
+                # Используем отдельный счетчик для модерации
+                await redis.incr(f"moderation:{local_path}")
+                logger.info(f"[MODERATION_COUNTER] Увеличен счетчик модерации для {local_path}")
+                # Устанавливаем TTL только если ключ новый (не имеет TTL)
+                ttl = await redis.ttl(f"moderation:{local_path}")
+                if ttl == -1:  # Ключ существует, но без TTL
+                    await redis.expire(f"moderation:{local_path}", 86400)  # 24 часа
+                    logger.info(f"[MODERATION_COUNTER] Установлен TTL 24 часа для счетчика модерации {local_path}")
+            except Exception as e:
+                logger.error(f"[MODERATION_COUNTER] Ошибка при инкременте счетчика модерации для {local_path}: {e}")
             media_out.append(m)
         elif m.get("url"):
             logger.info(f"[MODERATION_DETAIL] [{i}] Добавляю медиа с url: {m.get('url')}")
@@ -129,6 +142,32 @@ async def approved_queue_worker(redis, producer):
                 if not topic:
                     logger.error(f"[APPROVED_QUEUE] Не найден топик для канала {channel}")
                     continue
+                
+                # Уменьшаем счетчики модерации для всех медиа-файлов в посте
+                for media_item in post.get("media", []):
+                    if media_item.get("local_path") and os.path.exists(media_item["local_path"]):
+                        local_path = media_item["local_path"]
+                        try:
+                            # Уменьшаем счетчик модерации
+                            mod_count = await redis.decr(f"moderation:{local_path}")
+                            logger.info(f"[MODERATION_COUNTER] Уменьшен счетчик модерации для {local_path}: {mod_count}")
+                            
+                            # Если счетчик модерации достиг нуля, удаляем его
+                            if mod_count <= 0:
+                                await redis.delete(f"moderation:{local_path}")
+                                logger.info(f"[MODERATION_COUNTER] Счетчик модерации для {local_path} удален (достиг 0)")
+                                
+                                # Проверяем, есть ли еще счетчик file:*
+                                file_count = await redis.get(f"file:{local_path}")
+                                
+                                # Если нет счетчика file:* (или он 0), помечаем файл на удаление
+                                if not file_count or int(file_count) <= 0:
+                                    # Помечаем на удаление через 5 минут
+                                    await redis.set(f'delete_after:{local_path}', 1, ex=300)
+                                    logger.info(f"[MODERATION_COUNTER] Файл {local_path} помечен на удаление через 5 минут (оба счетчика 0)")
+                        except Exception as e:
+                            logger.error(f"[MODERATION_COUNTER] Ошибка при декременте счетчика модерации для {local_path}: {e}")
+                
                 logger.info(f"[APPROVED_QUEUE] Отправляю одобренный пост в топик {topic}")
                 await send_to_channel_topic(producer, topic, post)
             except Exception as e:
@@ -287,6 +326,24 @@ async def kafka_filter_worker():
                             logger.info(f"[CLEANUP] Временный файл удалён: {f}")
                         except Exception as e:
                             logger.warning(f"[CLEANUP] Не удалось удалить файл {f}: {e}")
+                # Дополнительная проверка: если файлы не были добавлены в счетчики, но все еще существуют,
+                # добавим их в delete_after с небольшим TTL для последующей очистки cleanup_worker'ом
+                elif media_files and not sent_to_moderation:  # Важно! Не удаляем файлы, отправленные на модерацию
+                    for f in media_files:
+                        if f not in media_files_to_count and os.path.exists(f):
+                            try:
+                                # Проверяем, есть ли уже счетчик для этого файла
+                                file_counter = await redis.get(f"file:{f}")
+                                if not file_counter:
+                                    # Если счетчика нет, помечаем файл на удаление через 5 минут
+                                    await redis.set(f'delete_after:{f}', 1, ex=300)
+                                    logger.info(f"[CLEANUP] Файл {f} не прошел фильтрацию, помечен на удаление через 5 минут")
+                            except Exception as e:
+                                logger.warning(f"[CLEANUP] Ошибка при обработке файла без счетчика {f}: {e}")
+                elif sent_to_moderation and media_files:
+                    # Для файлов на модерации не используем delete_after, а вместо этого полагаемся на 
+                    # счетчики модерации, установленные в add_to_moderation_queue_redis
+                    logger.info(f"[CLEANUP] {len(media_files)} файлов отправлены на модерацию и будут управляться счетчиками moderation:*")
     finally:
         logger.info("[KAFKA] Остановка consumer и producer...")
         await consumer.stop()
