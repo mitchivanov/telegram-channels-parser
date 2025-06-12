@@ -283,6 +283,26 @@ class ParserCore:
                 elapsed = (current_time - start_time).total_seconds()
                 self.logger.info(f"[STATS] Время работы: {elapsed:.1f} сек. Обработано каналов: {total_processed_channels}/{len(self.channels)}")
                 self.logger.info(f"[RUN] Начало итерации {batch_counter}, индекс {idx}")
+                
+                # Проверка глобальной паузы парсера
+                self.logger.info("Проверка глобальной паузы парсера...")
+                global_pause = await self.redis.get("parser:global_pause")
+                if global_pause and global_pause.decode('utf-8') == "1":
+                    self.logger.info("[GLOBAL PAUSE] Парсер поставлен на глобальную паузу, ожидание...")
+                    await asyncio.sleep(30)  # Проверяем каждые 30 секунд
+                    continue
+                
+                # Проверяем флаг сброса last_message_ids
+                reset_flag = await self.redis.get("parser:reset_last_ids")
+                if reset_flag and reset_flag.decode('utf-8') == "1":
+                    self.logger.info("[RESET] Получен сигнал сброса last_message_ids, сбрасываем для всех каналов...")
+                    try:
+                        await self.state.reset_all_last_ids()
+                        await self.redis.delete("parser:reset_last_ids")
+                        self.logger.info("[RESET] last_message_ids сброшены для всех каналов")
+                    except Exception as e:
+                        self.logger.error(f"[RESET] Ошибка при сбросе last_message_ids: {e}")
+                
                 self.logger.info("Проверка глобального floodwait...")
                 if await self.global_floodwait.is_active():
                     left = (self.global_floodwait.until - datetime.utcnow()).total_seconds()

@@ -46,6 +46,12 @@ class PostgresStateManager:
             )
             self.logger.info(f"[STATE][PG] Установка last_id для {channel}: {msg_id}")
 
+    async def reset_all_last_ids(self):
+        """Сброс всех last_id до 0 - используется при возобновлении парсера после паузы"""
+        async with self.pool.acquire() as conn:
+            result = await conn.execute("UPDATE channel_state SET last_id = 0")
+            self.logger.info(f"[STATE][PG] Сброшены last_id для всех каналов. Затронуто строк: {result}")
+
     async def is_album_processed(self, grouped_id):
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(

@@ -1,0 +1,132 @@
+Date : 2025-06-04 17:28:04
+Directory : c:\Users\micha\Desktop\Projects\telegram-channels-parser
+Total : 76 files,  10144 codes, 436 comments, 731 blanks, all 11311 lines
+
+Languages
++--------------------+------------+------------+------------+------------+------------+
+| language           | files      | code       | comment    | blank      | total      |
++--------------------+------------+------------+------------+------------+------------+
+| Python             |         32 |      4,392 |        420 |        580 |      5,392 |
+| JSON               |          4 |      4,321 |          4 |          8 |      4,333 |
+| TypeScript JSX     |          8 |        517 |          2 |         54 |        573 |
+| YAML               |          4 |        300 |          0 |         23 |        323 |
+| CSV                |          1 |        176 |          0 |          1 |        177 |
+| CSS                |          2 |         98 |          0 |         14 |        112 |
+| HTML               |          2 |         74 |          0 |          2 |         76 |
+| TypeScript         |          4 |         71 |          4 |         18 |         93 |
+| Docker             |          6 |         50 |          5 |          8 |         63 |
+| Markdown           |          2 |         46 |          0 |         10 |         56 |
+| pip requirements   |          5 |         28 |          0 |          1 |         29 |
+| Properties         |          1 |         27 |          0 |          7 |         34 |
+| JavaScript         |          1 |         27 |          0 |          2 |         29 |
+| Shell Script       |          1 |          8 |          1 |          2 |         11 |
+| JSON with Comments |          1 |          7 |          0 |          1 |          8 |
+| XML                |          2 |          2 |          0 |          0 |          2 |
++--------------------+------------+------------+------------+------------+------------+
+
+Directories
++------------------------------------------------------------------------------------------------------------+------------+------------+------------+------------+------------+
+| path                                                                                                       | files      | code       | comment    | blank      | total      |
++------------------------------------------------------------------------------------------------------------+------------+------------+------------+------------+------------+
+| .                                                                                                          |         76 |     10,144 |        436 |        731 |     11,311 |
+| . (Files)                                                                                                  |          9 |      1,617 |        240 |        305 |      2,162 |
+| channels-bot                                                                                               |          4 |        437 |         16 |         31 |        484 |
+| filter                                                                                                     |         39 |      5,855 |         66 |        196 |      6,117 |
+| filter (Files)                                                                                             |          8 |        499 |         44 |         43 |        586 |
+| filter-bot                                                                                                 |          3 |        311 |         16 |         20 |        347 |
+| filter\frontend                                                                                            |         26 |      5,142 |         12 |        116 |      5,270 |
+| filter\frontend (Files)                                                                                    |         11 |      4,463 |          7 |         32 |      4,502 |
+| filter\frontend\public                                                                                     |          1 |          1 |          0 |          0 |          1 |
+| filter\frontend\src                                                                                        |         14 |        678 |          5 |         84 |        767 |
+| filter\frontend\src (Files)                                                                                |          6 |        143 |          2 |         22 |        167 |
+| filter\frontend\src\api                                                                                    |          1 |         56 |          1 |         14 |         71 |
+| filter\frontend\src\assets                                                                                 |          1 |          1 |          0 |          0 |          1 |
+| filter\frontend\src\components                                                                             |          4 |        370 |          2 |         34 |        406 |
+| filter\frontend\src\pages                                                                                  |          2 |        108 |          0 |         14 |        122 |
+| filter\routes                                                                                              |          5 |        214 |         10 |         37 |        261 |
+| notifications-bot                                                                                          |          3 |        129 |          4 |         12 |        145 |
+| parser                                                                                                     |         18 |      1,795 |         94 |        167 |      2,056 |
++------------------------------------------------------------------------------------------------------------+------------+------------+------------+------------+------------+
+
+Files
++------------------------------------------------------------------------------------------------------------+--------------------+------------+------------+------------+------------+
+| filename                                                                                                   | language           | code       | comment    | blank      | total      |
++------------------------------------------------------------------------------------------------------------+--------------------+------------+------------+------------+------------+
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\README.md                                         | Markdown           |          1 |          0 |          0 |          1 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\channels-bot\Dockerfile                           | Docker             |          7 |          0 |          0 |          7 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\channels-bot\cleanup_worker.py                    | Python             |        108 |          5 |         16 |        129 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\channels-bot\main.py                              | Python             |        317 |         11 |         15 |        343 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\channels-bot\requirements.txt                     | pip requirements   |          5 |          0 |          0 |          5 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\docker-compose.yml                                | YAML               |        240 |          0 |         18 |        258 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter-bot\Dockerfile                             | Docker             |          6 |          0 |          0 |          6 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter-bot\main.py                                | Python             |        301 |         16 |         20 |        337 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter-bot\requirements.txt                       | pip requirements   |          4 |          0 |          0 |          4 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\Dockerfile                                 | Docker             |          6 |          0 |          0 |          6 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\db.py                                      | Python             |          7 |          0 |          2 |          9 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\frontend\Dockerfile                        | Docker             |         14 |          2 |          1 |         17 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\frontend\README.md                         | Markdown           |         45 |          0 |         10 |         55 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\frontend\eslint.config.js                  | JavaScript         |         27 |          0 |          2 |         29 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\frontend\index.html                        | HTML               |         13 |          0 |          1 |         14 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\frontend\nginx.conf                        | Properties         |         27 |          0 |          7 |         34 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\frontend\package-lock.json                 | JSON               |      4,244 |          0 |          1 |      4,245 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\frontend\package.json                      | JSON               |         35 |          0 |          1 |         36 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\frontend\public\vite.svg                   | XML                |          1 |          0 |          0 |          1 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\frontend\src\App.css                       | CSS                |         37 |          0 |          6 |         43 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\frontend\src\App.tsx                       | TypeScript JSX     |         30 |          0 |          4 |         34 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\frontend\src\api\filters.ts                | TypeScript         |         56 |          1 |         14 |         71 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\frontend\src\assets\react.svg              | XML                |          1 |          0 |          0 |          1 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\frontend\src\channelNames.ts               | TypeScript         |          6 |          1 |          1 |          8 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\frontend\src\components\ChannelFilters.tsx | TypeScript JSX     |         97 |          0 |          8 |        105 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\frontend\src\components\FilterForm.tsx     | TypeScript JSX     |        102 |          0 |          7 |        109 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\frontend\src\components\LoginForm.tsx      | TypeScript JSX     |         44 |          0 |          6 |         50 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\frontend\src\components\ParserControl.tsx  | TypeScript JSX     |        127 |          2 |         13 |        142 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\frontend\src\index.css                     | CSS                |         61 |          0 |          8 |         69 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\frontend\src\main.tsx                      | TypeScript JSX     |          9 |          0 |          2 |         11 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\frontend\src\pages\LoginPage.tsx           | TypeScript JSX     |          8 |          0 |          2 |         10 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\frontend\src\pages\MainPage.tsx            | TypeScript JSX     |        100 |          0 |         12 |        112 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\frontend\src\vite-env.d.ts                 | TypeScript         |          0 |          1 |          1 |          2 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\frontend\tsconfig.app.json                 | JSON               |         22 |          2 |          3 |         27 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\frontend\tsconfig.json                     | JSON with Comments |          7 |          0 |          1 |          8 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\frontend\tsconfig.node.json                | JSON               |         20 |          2 |          3 |         25 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\frontend\vite.config.ts                    | TypeScript         |          9 |          1 |          2 |         12 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\kafka_worker.py                            | Python             |        304 |         32 |         18 |        354 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\main.py                                    | Python             |         61 |          6 |         11 |         78 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\models.py                                  | Python             |         26 |          0 |          3 |         29 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\requirements.txt                           | pip requirements   |          9 |          0 |          0 |          9 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\routes\__init__.py                         | Python             |          0 |          0 |          1 |          1 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\routes\filters.py                          | Python             |        146 |         10 |         25 |        181 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\routes\health.py                           | Python             |          5 |          0 |          2 |          7 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\routes\media.py                            | Python             |         26 |          0 |          4 |         30 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\routes\moderation.py                       | Python             |         37 |          0 |          5 |         42 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\schemas.py                                 | Python             |         28 |          0 |          7 |         35 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\filter\utils.py                                   | Python             |         58 |          6 |          2 |         66 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\loki-config.yaml                                  | YAML               |         35 |          0 |          0 |         35 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\notifications-bot\Dockerfile                      | Docker             |          6 |          0 |          0 |          6 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\notifications-bot\main.py                         | Python             |        120 |          4 |         12 |        136 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\notifications-bot\requirements.txt                | pip requirements   |          3 |          0 |          0 |          3 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\parser.py                                         | Python             |      1,200 |        239 |        275 |      1,714 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\parser\Dockerfile                                 | Docker             |         11 |          3 |          7 |         21 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\parser\[DEPRECATED]state.py                       | Python             |         83 |          5 |         12 |        100 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\parser\activity_monitor.py                        | Python             |         43 |          0 |          5 |         48 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\parser\config_loader.py                           | Python             |         19 |          0 |          3 |         22 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\parser\db_models.py                               | Python             |         15 |          0 |          3 |         18 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\parser\entities.csv                               | CSV                |        176 |          0 |          1 |        177 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\parser\entrypoint.sh                              | Shell Script       |          8 |          1 |          2 |         11 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\parser\export_entities_to_csv.py                  | Python             |         45 |          0 |          7 |         52 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\parser\floodwait_manager.py                       | Python             |         24 |          0 |          3 |         27 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\parser\import_entities_from_csv.py                | Python             |         44 |          1 |          4 |         49 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\parser\kafka_producer.py                          | Python             |         64 |          1 |          8 |         73 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\parser\main.py                                    | Python             |        902 |         66 |         74 |      1,042 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\parser\postgres_state.py                          | Python             |         76 |          0 |          9 |         85 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\parser\rate_limiter.py                            | Python             |         23 |          0 |          3 |         26 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\parser\requirements.txt                           | pip requirements   |          7 |          0 |          1 |          8 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\parser\task_queue_manager.py                      | Python             |        104 |          8 |         10 |        122 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\parser\test_telethon_download.py                  | Python             |         56 |          1 |          3 |         60 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\parser\utils.py                                   | Python             |         95 |          8 |         12 |        115 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\prometheus.yml                                    | YAML               |          9 |          0 |          2 |         11 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\promtail-config.yaml                              | YAML               |         16 |          0 |          3 |         19 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\rainbow-text.html                                 | HTML               |         61 |          0 |          1 |         62 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\solution.py                                       | Python             |          0 |          0 |          1 |          1 |
+| c:\Users\micha\Desktop\Projects\telegram-channels-parser\test_telethon_download.py                         | Python             |         55 |          1 |          5 |         61 |
+| Total                                                                                                      |                    |     10,144 |        436 |        731 |     11,311 |
++------------------------------------------------------------------------------------------------------------+--------------------+------------+------------+------------+------------+

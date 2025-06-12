@@ -11,6 +11,7 @@ import os
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
 PAUSE_KEY_PREFIX = "filtering:paused:"
+GLOBAL_PAUSE_KEY = "parser:global_pause"
 
 router = APIRouter(prefix="/filters", tags=["Filters"])
 
@@ -127,6 +128,29 @@ async def pause_channel(channel_name: str, redis=Depends(get_redis)):
 async def resume_channel(channel_name: str, redis=Depends(get_redis)):
     await redis.set(f"{PAUSE_KEY_PREFIX}{channel_name}", "0")
     return {"channel": channel_name, "paused": False}
+
+# Глобальная пауза парсера
+@router.get("/parser/status", summary="Получить статус парсера")
+async def get_parser_status(redis=Depends(get_redis)):
+    """Получить глобальный статус парсера (включен/на паузе)"""
+    paused = await redis.get(GLOBAL_PAUSE_KEY)
+    return {"parser_paused": paused == "1"}
+
+@router.post("/parser/pause", summary="Поставить парсер на глобальную паузу")
+async def pause_parser(redis=Depends(get_redis)):
+    """Поставить весь парсер на глобальную паузу"""
+    await redis.set(GLOBAL_PAUSE_KEY, "1")
+    logging.info("Парсер поставлен на глобальную паузу")
+    return {"parser_paused": True, "message": "Парсер поставлен на паузу"}
+
+@router.post("/parser/resume", summary="Снять парсер с глобальной паузы")
+async def resume_parser(redis=Depends(get_redis)):
+    """Снять парсер с глобальной паузы и сбросить last_message_ids"""
+    await redis.set(GLOBAL_PAUSE_KEY, "0")
+    # Сигнализируем парсеру о необходимости сброса last_message_ids
+    await redis.set("parser:reset_last_ids", "1", ex=300)  # Флаг на 5 минут
+    logging.info("Парсер снят с глобальной паузы, установлен флаг сброса last_message_ids")
+    return {"parser_paused": False, "message": "Парсер возобновлен, будет парсить только новые посты"}
 
 @router.get("/filter_by_id/{channel_id}", response_model=FilterOut, summary="Получить фильтр по id канала")
 async def get_filter_by_id(channel_id: int, db: AsyncSession = Depends(get_db)):

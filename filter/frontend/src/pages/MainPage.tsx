@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Container, Typography, CircularProgress, Alert, Snackbar } from '@mui/material';
 import ChannelFilters from '../components/ChannelFilters';
+import ParserControl from '../components/ParserControl';
 import { getChannels, setFilter, getPauseStatuses, pauseChannel, resumeChannel } from '../api/filters';
 
 const MainPage: React.FC = () => {
@@ -95,6 +96,9 @@ const MainPage: React.FC = () => {
   return (
     <Container sx={{mt:4}} maxWidth="md">
       <Typography variant="h4" mb={4}>Каналы и фильтры</Typography>
+      
+      <ParserControl />
+      
       <ChannelFilters channels={channels} onSave={handleSave} pauseStatuses={pauseStatuses} onPauseToggle={handlePauseToggle} pauseLoading={pauseLoading} />
       <Snackbar open={open} autoHideDuration={3000} onClose={handleClose} anchorOrigin={{vertical:'bottom',horizontal:'center'}}>
         {(error || success) ? (
