@@ -119,7 +119,7 @@ services:
       dockerfile: Dockerfile
     container_name: filter-frontend
     ports:
-      - "8080:80"
+      - "8085:80"
     depends_on:
       filter-backend:
         condition: service_started
