@@ -75,7 +75,7 @@ services:
       - CHANNEL2_ID=${CHANNEL2_ID}
       - CHANNEL3_ID=${CHANNEL3_ID}
     ports:
-      - "8000:8000"
+      - "8005:8000"
     depends_on:
       kafka:
         condition: service_healthy
