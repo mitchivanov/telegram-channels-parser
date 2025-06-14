@@ -165,7 +165,7 @@ services:
       - POSTGRES_PASSWORD=postgres
       - POSTGRES_DB=filter
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
 
@@ -174,7 +174,7 @@ services:
     container_name: kafdrop
     restart: unless-stopped
     ports:
-      - "9002:9000"
+      - "9003:9000"
     environment:
       KAFKA_BROKERCONNECT: "kafka:9092"
     depends_on:
@@ -185,7 +185,7 @@ services:
     image: grafana/loki:2.9.2
     container_name: loki
     ports:
-      - "3100:3100"
+      - "3101:3100"
     command: -config.file=/etc/loki/local-config.yaml
     user: "0:0"
     volumes:
@@ -208,7 +208,7 @@ services:
     image: prom/prometheus:v2.51.2
     container_name: prometheus
     ports:
-      - "9090:9090"
+      - "9091:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
     command:
@@ -220,14 +220,14 @@ services:
     image: prom/node-exporter:v1.8.1
     container_name: node-exporter
     ports:
-      - "9100:9100"
+      - "9101:9100"
     restart: unless-stopped
 
   grafana:
     image: grafana/grafana:10.2.3
     container_name: grafana
     ports:
-      - "3000:3000"
+      - "3001:3000"
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=admin
     depends_on:
