@@ -25,12 +25,24 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "24"
+        labels: "service=kafka"
 
   redis:
     image: redis:7
     container_name: redis
     ports:
       - "6379:6379"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "24"
+        labels: "service=redis"
 
   parser:
     build: ./parser
@@ -50,6 +62,12 @@ services:
       - KAFKA_CONFIG=/app/config/kafka_config.json
       - REDIS_URL=redis://redis:6379/0
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "24"
+        labels: "service=parser"
 
   notifications-bot:
     build: ./notifications-bot
@@ -62,6 +80,12 @@ services:
       - CODE_BOT_TOKEN=${CODE_BOT_TOKEN}
       - ADMIN_IDS=${ADMIN_IDS}
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "24"
+        labels: "service=notifications-bot"
 
   filter-backend:
     build:
@@ -88,6 +112,12 @@ services:
     volumes:
       - ./filter:/app
       - parser_temp:/app/temp
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "24"
+        labels: "service=filter-backend"
 
   filter-worker:
     build:
@@ -112,6 +142,12 @@ services:
     volumes:
       - ./filter:/app
       - parser_temp:/app/temp
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "24"
+        labels: "service=filter-worker"
 
   filter-frontend:
     build:
@@ -124,6 +160,12 @@ services:
       filter-backend:
         condition: service_started
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "24"
+        labels: "service=filter-frontend"
 
   channels-bot:
     build:
@@ -142,6 +184,12 @@ services:
     restart: unless-stopped
     volumes:
       - parser_temp:/app/temp
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "24"
+        labels: "service=channels-bot"
 
   channels-cleanup-worker:
     build:
@@ -156,6 +204,12 @@ services:
     command: python -u cleanup_worker.py
     volumes:
       - parser_temp:/app/temp
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "24"
+        labels: "service=channels-cleanup-worker"
 
   db:
     image: postgres:15
@@ -168,6 +222,12 @@ services:
       - "5433:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "24"
+        labels: "service=db"
 
   kafdrop:
     image: obsidiandynamics/kafdrop
@@ -180,6 +240,12 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "24"
+        labels: "service=kafdrop"
 
   # Monitoring stack - disabled for now
   # loki:
@@ -249,6 +315,29 @@ services:
     restart: unless-stopped
     volumes:
       - parser_temp:/app/temp
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "24"
+        labels: "service=filter-bot"
+
+  log-rotator:
+    image: alpine:latest
+    container_name: log-rotator
+    volumes:
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - ./logs:/app/logs
+      - ./scripts:/app/scripts:ro
+    command: >
+      sh -c "
+        apk add --no-cache jq &&
+        chmod +x /app/scripts/log-rotator.sh &&
+        /app/scripts/log-rotator.sh
+      "
+    restart: unless-stopped
+    environment:
+      - TZ=UTC
 
 volumes:
   kafka_data:
