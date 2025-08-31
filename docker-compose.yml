@@ -20,8 +20,7 @@ services:
       - KAFKA_CFG_LOG_RETENTION_MS=600000
       - KAFKA_CFG_LOG_SEGMENT_MS=300000
       - KAFKA_CFG_LOG_CLEANUP_INTERVAL_MS=60000
-    ports:
-      - "9092:9092"
+    # ports:  # Removed external port exposure
     volumes:
       - kafka_data:/bitnami/kafka
     healthcheck:
@@ -29,12 +28,15 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    cpus: "2.0"
+    mem_limit: 2g
 
   redis:
     image: redis:7
     container_name: redis
-    ports:
-      - "6379:6379"
+    # ports:  # Removed external port exposure
+    cpus: "0.5"
+    mem_limit: 512m
 
   parser:
     build: ./parser
@@ -54,6 +56,8 @@ services:
       - KAFKA_CONFIG=/app/config/kafka_config.json
       - REDIS_URL=redis://redis:6379/0
     restart: unless-stopped
+    cpus: "1.0"
+    mem_limit: 1g
 
   notifications-bot:
     build: ./notifications-bot
@@ -66,6 +70,8 @@ services:
       - CODE_BOT_TOKEN=${CODE_BOT_TOKEN}
       - ADMIN_IDS=${ADMIN_IDS}
     restart: unless-stopped
+    cpus: "0.5"
+    mem_limit: 512m
 
   filter-backend:
     build:
@@ -79,7 +85,7 @@ services:
       - CHANNEL2_ID=${CHANNEL2_ID}
       - CHANNEL3_ID=${CHANNEL3_ID}
     ports:
-      - "8005:8000"
+      - "127.0.0.1:8005:8000"  # Changed to localhost-only
     depends_on:
       kafka:
         condition: service_healthy
@@ -92,6 +98,8 @@ services:
     volumes:
       - ./filter:/app
       - parser_temp:/app/temp
+    cpus: "1.0"
+    mem_limit: 1g
 
   filter-worker:
     build:
@@ -116,6 +124,8 @@ services:
     volumes:
       - ./filter:/app
       - parser_temp:/app/temp
+    cpus: "1.0"
+    mem_limit: 1g
 
   filter-frontend:
     build:
@@ -128,6 +138,8 @@ services:
       filter-backend:
         condition: service_started
     restart: unless-stopped
+    cpus: "0.5"
+    mem_limit: 512m
 
   channels-bot:
     build:
@@ -146,6 +158,8 @@ services:
     restart: unless-stopped
     volumes:
       - parser_temp:/app/temp
+    cpus: "1.0"
+    mem_limit: 1g
 
   channels-cleanup-worker:
     build:
@@ -160,6 +174,8 @@ services:
     command: python -u cleanup_worker.py
     volumes:
       - parser_temp:/app/temp
+    cpus: "0.5"
+    mem_limit: 512m
 
   db:
     image: postgres:15
@@ -168,22 +184,24 @@ services:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
       - POSTGRES_DB=filter
-    ports:
-      - "5433:5432"
+    # ports:  # Removed external port exposure
     volumes:
       - db_data:/var/lib/postgresql/data
+    cpus: "1.5"
+    mem_limit: 1g
 
   kafdrop:
     image: obsidiandynamics/kafdrop
     container_name: kafdrop
     restart: unless-stopped
-    ports:
-      - "9003:9000"
+    # ports:  # Removed external port exposure
     environment:
       KAFKA_BROKERCONNECT: "kafka:9092"
     depends_on:
       kafka:
         condition: service_healthy
+    cpus: "0.5"
+    mem_limit: 512m
 
   # Monitoring stack - disabled for now
   # loki:
@@ -253,6 +271,8 @@ services:
     restart: unless-stopped
     volumes:
       - parser_temp:/app/temp
+    cpus: "0.5"
+    mem_limit: 512m
 
 volumes:
   kafka_data:
