@@ -11,7 +11,7 @@ from utils import filter_message, async_backoff
 from config_loader import REDIS_URL, TELEGRAM_2FA_PASSWORD, TELEGRAM_PHONE, TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_SESSION, MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, MINIO_BUCKET
 from config_loader import KAFKA_RAW_TOPIC
 from telethon import TelegramClient
-from telethon.errors import FloodWaitError, SessionPasswordNeededError, PhoneCodeInvalidError, UserNotParticipantError, ChannelPrivateError, InviteHashInvalidError
+from telethon.errors import FloodWaitError, SessionPasswordNeededError, PhoneCodeInvalidError, UserNotParticipantError, ChannelPrivateError, InviteHashInvalidError, PhoneNumberBannedError, PhoneNumberInvalidError
 from telethon.tl.functions.messages import GetHistoryRequest
 from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument, MessageMediaWebPage, MessageMediaContact, MessageMediaGeo, MessageMediaPoll, User, Channel, Chat
 import logging
@@ -131,6 +131,7 @@ class ParserCore:
     async def _get_code_from_admin(self, code_type):
         try:
             # Для текстовых ключей в Redis используем кодировку utf-8
+            await self.redis.set('tg:code:pending', code_type, ex=300)  # Сохраняем тип запроса на 5 минут
             await self.redis.publish('tg:code:request', code_type.encode('utf-8'))
             self.logger.info(f"Ожидание {code_type} от админа через Redis (ключ: tg:code:response)...")
             
@@ -148,6 +149,7 @@ class ParserCore:
                 if code:
                     code_str = code.decode('utf-8')
                     await self.redis.delete('tg:code:response')
+                    await self.redis.delete('tg:code:pending')  # Очищаем состояние запроса
                     self.logger.info(f"Получен {code_type} от админа: {code_str}")
                     return code_str.strip()
                 await asyncio.sleep(5)
@@ -167,7 +169,37 @@ class ParserCore:
             if not await self.client.is_user_authorized():
                 self.logger.info("Пользователь не авторизован, запрос кода подтверждения.")
                 try:
-                    await self.client.send_code_request(TELEGRAM_PHONE)
+                    
+                    self.logger.info(f"Отправка запроса кода на номер: {TELEGRAM_PHONE}")
+                    try:
+                        result = await self.client.send_code_request(TELEGRAM_PHONE)
+                        self.logger.info(f"Результат запроса кода: phone_code_hash={getattr(result, 'phone_code_hash', 'N/A')}, type={type(result)}")
+                        
+                        # Логируем информацию о типе кода
+                        if hasattr(result, 'type'):
+                            self.logger.info(f"Тип отправки кода: {result.type}")
+                            if hasattr(result.type, 'type'):
+                                self.logger.info(f"Конкретный тип: {result.type.type}")
+                            if hasattr(result.type, 'length'):
+                                self.logger.info(f"Длина кода: {result.type.length}")
+                        
+                        # ВАЖНО: Telegram может отправить код через другие активные сессии!
+                        # Проверяем next_type - следующий способ отправки кода
+                        if hasattr(result, 'next_type'):
+                            self.logger.warning(f"Следующий тип отправки кода (если текущий не сработает): {result.next_type}")
+                        
+                        if hasattr(result, 'timeout'):
+                            self.logger.info(f"Таймаут до повторной отправки: {result.timeout} секунд")
+                    except FloodWaitError as e:
+                        self.logger.error(f"Telegram требует подождать {e.seconds} секунд перед повторной попыткой")
+                        await asyncio.sleep(e.seconds)
+                        result = await self.client.send_code_request(TELEGRAM_PHONE)
+                    except PhoneNumberBannedError:
+                        self.logger.critical(f"Номер телефона {TELEGRAM_PHONE} заблокирован в Telegram!")
+                        raise
+                    except PhoneNumberInvalidError:
+                        self.logger.critical(f"Неверный формат номера телефона: {TELEGRAM_PHONE}")
+                        raise
                     auth_retries = 3
                     
                     while auth_retries > 0:

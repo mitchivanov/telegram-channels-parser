@@ -40,7 +40,16 @@ async def redis_listener():
     if pending in ("sms", "2fa"):
         logging.info(f"Обнаружен ожидающий запрос на {pending} при старте. Отправляю админу...")
         current_request_type = pending
-        text = "Пожалуйста, отправьте <b>код подтверждения</b> из SMS." if pending == "sms" else "Пожалуйста, отправьте <b>пароль двухфакторной аутентификации</b>."
+        text = "⚠️ <b>Требуется авторизация!</b>\n\n"
+        if pending == "sms":
+            text += "Пожалуйста, отправьте <b>код подтверждения</b>.\n\n"
+            text += "❗ <b>ВАЖНО:</b> Код может прийти:\n"
+            text += "• В SMS на номер телефона\n"
+            text += "• В другом активном клиенте Telegram\n" 
+            text += "• В официальном приложении Telegram\n\n"
+            text += "Проверьте все источники!"
+        else:
+            text += "Пожалуйста, отправьте <b>пароль двухфакторной аутентификации</b>."
         for admin_id in ADMIN_IDS:
             try:
                 logging.info(f"Sending message to admin {admin_id}: {text}")
@@ -59,7 +68,16 @@ async def redis_listener():
             if data not in ("sms", "2fa"):
                 continue
             current_request_type = data
-            text = "Пожалуйста, отправьте <b>код подтверждения</b> из SMS." if data == "sms" else "Пожалуйста, отправьте <b>пароль двухфакторной аутентификации</b>."
+            text = "⚠️ <b>Требуется авторизация!</b>\n\n"
+            if data == "sms":
+                text += "Пожалуйста, отправьте <b>код подтверждения</b>.\n\n"
+                text += "❗ <b>ВАЖНО:</b> Код может прийти:\n"
+                text += "• В SMS на номер телефона\n"
+                text += "• В другом активном клиенте Telegram\n"
+                text += "• В официальном приложении Telegram\n\n"
+                text += "Проверьте все источники!"
+            else:
+                text += "Пожалуйста, отправьте <b>пароль двухфакторной аутентификации</b>."
             for admin_id in ADMIN_IDS:
                 try:
                     logging.info(f"Sending message to admin {admin_id}: {text}")
