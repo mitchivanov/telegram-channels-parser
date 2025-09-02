@@ -187,8 +187,15 @@ services:
     # ports:  # Removed external port exposure
     volumes:
       - db_data:/var/lib/postgresql/data
-    cpus: "1.5"
-    mem_limit: 1g
+    cpus: "2"
+    mem_limit: 2g
+    restart: unless-stopped
+    # Healthcheck для мониторинга состояния БД
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   kafdrop:
     image: obsidiandynamics/kafdrop

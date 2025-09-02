@@ -138,9 +138,16 @@ async def approved_queue_worker(redis, producer):
                 post = json.loads(post_json)
                 # Получаем ID канала из поля target_channel
                 channel = post.get("target_channel") or post.get("channel")
+                channel_name = post.get("target_channel_name", "Неизвестный")
+                
+                # Диагностическое логирование
+                logger.info(f"[APPROVED_QUEUE] Обрабатываю одобренный пост для канала {channel} ({channel_name})")
+                logger.info(f"[APPROVED_QUEUE] Доступные топики: {CHANNEL_TOPICS}")
+                
                 topic = CHANNEL_TOPICS.get(channel)
                 if not topic:
-                    logger.error(f"[APPROVED_QUEUE] Не найден топик для канала {channel}")
+                    logger.error(f"[APPROVED_QUEUE] Не найден топик для канала {channel}. Проверьте CHANNEL_TOPICS!")
+                    logger.error(f"[APPROVED_QUEUE] target_channel из поста: '{channel}', тип: {type(channel)}")
                     continue
                 
                 # Уменьшаем счетчики модерации для всех медиа-файлов в посте

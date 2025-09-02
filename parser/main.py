@@ -191,7 +191,16 @@ class ParserCore:
                         if hasattr(result, 'timeout'):
                             self.logger.info(f"Таймаут до повторной отправки: {result.timeout} секунд")
                     except FloodWaitError as e:
-                        self.logger.error(f"Telegram требует подождать {e.seconds} секунд перед повторной попыткой")
+                        wait_minutes = e.seconds / 60
+                        wait_hours = wait_minutes / 60
+                        self.logger.error(f"Telegram требует подождать {e.seconds} секунд ({wait_minutes:.1f} минут / {wait_hours:.1f} часов) перед повторной попыткой")
+                        
+                        # Если ждать больше часа - не имеет смысла
+                        if e.seconds > 3600:
+                            self.logger.critical(f"Слишком долгое ожидание ({wait_hours:.1f} часов). Остановка парсера.")
+                            raise RuntimeError(f"Telegram заблокировал запросы кода на {wait_hours:.1f} часов. Попробуйте позже.")
+                        
+                        self.logger.info(f"Ожидание {wait_minutes:.1f} минут...")
                         await asyncio.sleep(e.seconds)
                         result = await self.client.send_code_request(TELEGRAM_PHONE)
                     except PhoneNumberBannedError:

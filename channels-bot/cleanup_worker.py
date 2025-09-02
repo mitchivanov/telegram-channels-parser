@@ -76,8 +76,18 @@ async def cleanup_temp_files(redis, interval=CLEANUP_INTERVAL):
                     errors_count += 1
                 continue
             
-            # ИЗМЕНЕНО: Удаляем файл независимо от TTL
-            logger.info(f"Attempting to remove file {local_path}")
+            # Проверяем TTL ключа
+            ttl = await redis.ttl(key)
+            logger.debug(f"TTL for key {key.decode()}: {ttl}")
+            
+            # Если TTL истёк (ключ существует но TTL = -1) или TTL = 0, удаляем файл
+            # Иначе, если TTL > 0, ждём его истечения
+            if ttl > 0:
+                logger.debug(f"File {local_path} has TTL {ttl} seconds remaining, skipping deletion")
+                continue
+            
+            # TTL истёк или ключ без TTL, можно удалять файл
+            logger.info(f"Attempting to remove file {local_path} (TTL expired or no TTL)")
             try:
                 os.remove(local_path)
                 logger.info(f'File удалён: {local_path}')
@@ -86,10 +96,10 @@ async def cleanup_temp_files(redis, interval=CLEANUP_INTERVAL):
                 logger.warning(f'Не удалось удалить файл {local_path}: {e}')
                 errors_count += 1
             
-            # Удаляем ключ из Redis в любом случае
+            # Удаляем ключ из Redis после удаления файла
             try:
                 await redis.delete(key)
-                logger.info(f"Key {key.decode()} deleted from Redis after processing.")
+                logger.info(f"Key {key.decode()} deleted from Redis after file deletion.")
                 deleted_keys_count += 1
             except Exception as e:
                 logger.error(f"Error deleting key {key.decode()} from Redis after processing: {e}")

@@ -40,8 +40,22 @@ async def send_post_for_moderation(post: dict, message_id: str):
     media = post.get("media", [])
     logger.info(f"[MODERATION_DETAILS] Медиа файлы ({len(media)}): {json.dumps(media, ensure_ascii=False)}")
     channel = post.get("target_channel") or post.get("source_channel")
-    channel_name = get_channel_name(channel)
-    channel_info = f"\n<b>Канал:</b> <code>{channel_name}</code>" if channel else ""
+    channel_name = post.get("target_channel_name") or get_channel_name(channel)
+    
+    # Добавляем детальную информацию о канале
+    if channel:
+        # Определяем тип канала по ID
+        channel_type = "Неизвестный"
+        if channel == "-1002503014558":
+            channel_type = "Премиум"
+        elif channel == "-1002687437494":
+            channel_type = "Базовый"
+        elif channel == "-1001655410418":
+            channel_type = "Бесплатный"
+        
+        channel_info = f"\n<b>Канал:</b> <code>{channel_name}</code>\n<b>ID:</b> <code>{channel}</code>\n<b>Тип:</b> <code>{channel_type}</code>"
+    else:
+        channel_info = ""
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve:{message_id}"),
@@ -164,6 +178,17 @@ async def approve_post(callback: CallbackQuery):
     if not post_json:
         await callback.answer("Пост не найден.", show_alert=True)
         return
+    
+    # Диагностическое логирование
+    try:
+        post = json.loads(post_json)
+        target_channel = post.get("target_channel")
+        channel_name = post.get("target_channel_name", "Неизвестный")
+        logger.info(f"[APPROVE] Одобряю пост для канала {target_channel} ({channel_name})")
+        logger.info(f"[APPROVE] Полные данные поста: {json.dumps(post, ensure_ascii=False)[:500]}")
+    except Exception as e:
+        logger.error(f"[APPROVE] Ошибка при логировании: {e}")
+    
     await redis.rpush(APPROVED_QUEUE, post_json)
     await redis.set(f"moderation_status:{message_id}", "approved", ex=3600)
     await callback.answer("Пост одобрен!")
@@ -256,7 +281,16 @@ async def moderation_worker():
             try:
                 logger.info(f"[MODERATION_RAW] Получены данные из очереди: {post_json}")
                 post = json.loads(post_json)
-                message_id = str(post.get("id") or hash(post_json))
+                # Генерируем уникальный message_id включая target_channel
+                post_id = post.get("id", "")
+                target_channel = post.get("target_channel", "")
+                if post_id and target_channel:
+                    # Если есть и ID поста и канал, комбинируем их
+                    message_id = f"{post_id}_{target_channel}"
+                else:
+                    # Иначе используем хеш от JSON
+                    import hashlib
+                    message_id = hashlib.md5(post_json.encode()).hexdigest()[:16]
                 logger.info(f"[MODERATION] Получен пост на модерацию: {message_id}")
                 await send_post_for_moderation(post, message_id)
             except json.JSONDecodeError as e:
