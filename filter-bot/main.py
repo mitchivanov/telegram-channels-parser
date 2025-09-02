@@ -168,7 +168,7 @@ async def send_post_for_moderation(post: dict, message_id: str):
     if sent_msg:
         await redis.set(f"mod_msg:{sent_msg.message_id}", message_id, ex=MODERATION_TTL)
         # Сохраняем Telegram message ID для автоудаления
-        await redis.set(f"mod_telegram_msg:{message_id}", sent_msg.message_id, ex=MODERATION_TTL)
+        await redis.set(f"mod_telegram_msg:{message_id}", sent_msg.message_id, ex=MODERATION_TTL + 300)  # +5 минут для обработки удаления
         logger.info(f"[MODERATION_DETAILS] Сохранен Telegram message ID: {sent_msg.message_id}")
     
     await redis.set(f"mod_post:{message_id}", json.dumps(post, ensure_ascii=False), ex=MODERATION_TTL + 300)  # +5 минут для обработки
