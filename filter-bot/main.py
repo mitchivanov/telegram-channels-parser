@@ -171,7 +171,7 @@ async def send_post_for_moderation(post: dict, message_id: str):
         await redis.set(f"mod_telegram_msg:{message_id}", sent_msg.message_id, ex=MODERATION_TTL)
         logger.info(f"[MODERATION_DETAILS] Сохранен Telegram message ID: {sent_msg.message_id}")
     
-    await redis.set(f"mod_post:{message_id}", json.dumps(post, ensure_ascii=False), ex=MODERATION_TTL)
+    await redis.set(f"mod_post:{message_id}", json.dumps(post, ensure_ascii=False), ex=MODERATION_TTL + 300)  # +5 минут для обработки
     await redis.set(f"moderation_status:{message_id}", "pending", ex=MODERATION_TTL)
     # Ключ для автоудаления через 60 минут
     await redis.set(f"mod_expire:{message_id}", 1, ex=MODERATION_TTL)
@@ -260,7 +260,7 @@ async def process_new_text(message: Message, state: FSMContext):
         return
     post = json.loads(post_json)
     post["text"] = message.text
-    await redis.set(f"mod_post:{message_id}", json.dumps(post, ensure_ascii=False), ex=MODERATION_TTL)
+    await redis.set(f"mod_post:{message_id}", json.dumps(post, ensure_ascii=False), ex=MODERATION_TTL + 300)  # +5 минут для обработки
     await redis.set(f"moderation_status:{message_id}", "edited", ex=MODERATION_TTL)
     # Обновляем сообщение с кнопками
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -367,7 +367,7 @@ async def moderation_expiry_worker():
                 logger.info(f"[EXPIRY] Пост {message_id} и все связанные ключи удалены из модерации (auto-expire)")
         except Exception as e:
             logger.error(f"[EXPIRY] Ошибка в воркере автоудаления: {e}")
-        await asyncio.sleep(60)
+        await asyncio.sleep(10)
 
 async def main():
     logger.info(f"[CONFIG] TTL модерации установлен на {MODERATION_TTL/60} минут ({MODERATION_TTL} секунд)")
