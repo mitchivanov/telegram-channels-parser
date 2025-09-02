@@ -321,10 +321,12 @@ async def moderation_expiry_worker():
                     continue
                 message_id = m.group(1)
                 expire_key = f"mod_expire:{message_id}"
-                exists = await redis.exists(expire_key)
-                if exists:
+                ttl = await redis.ttl(expire_key)
+                # Если TTL > 0, ключ еще действует, пропускаем
+                if ttl > 0:
+                    logger.debug(f"[EXPIRY] Пост {message_id} еще не истек, TTL: {ttl} сек")
                     continue
-                # Ключа mod_expire нет — пост устарел, надо удалить
+                # Если TTL <= 0 или -1/-2 (ключ истек или не существует) — пост устарел, надо удалить
                 post_json = await redis.get(key)
                 logger.info(f"[EXPIRY] Пост {message_id} устарел (>60 минут), удаляю из модерации")
                 if post_json:
