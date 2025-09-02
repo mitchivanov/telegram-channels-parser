@@ -16,10 +16,10 @@ services:
       - KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
       - KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR=1
       - ALLOW_PLAINTEXT_LISTENER=yes
-      # Retention policy - удаление сообщений старше 10 минут
-      - KAFKA_CFG_LOG_RETENTION_MS=600000
-      - KAFKA_CFG_LOG_SEGMENT_MS=300000
-      - KAFKA_CFG_LOG_CLEANUP_INTERVAL_MS=60000
+      # Retention policy - настраивается через переменную окружения
+      - KAFKA_CFG_LOG_RETENTION_MS=${MODERATION_TTL_MS:-3600000}  # По умолчанию 60 минут
+      - KAFKA_CFG_LOG_SEGMENT_MS=${MODERATION_TTL_SEGMENT_MS:-1800000}  # По умолчанию 30 минут
+      - KAFKA_CFG_LOG_CLEANUP_INTERVAL_MS=300000  # проверка каждые 5 минут
     # ports:  # Removed external port exposure
     volumes:
       - kafka_data:/bitnami/kafka
@@ -84,6 +84,7 @@ services:
       - CHANNEL1_ID=${CHANNEL1_ID}
       - CHANNEL2_ID=${CHANNEL2_ID}
       - CHANNEL3_ID=${CHANNEL3_ID}
+      - MODERATION_TTL_MINUTES=${MODERATION_TTL_MINUTES:-60}
     ports:
       - "127.0.0.1:8005:8000"  # Changed to localhost-only
     depends_on:
@@ -112,6 +113,7 @@ services:
       - CHANNEL1_ID=${CHANNEL1_ID}
       - CHANNEL2_ID=${CHANNEL2_ID}
       - CHANNEL3_ID=${CHANNEL3_ID}
+      - MODERATION_TTL_MINUTES=${MODERATION_TTL_MINUTES:-60}
     depends_on:
       kafka:
         condition: service_healthy
@@ -273,6 +275,8 @@ services:
     container_name: filter-bot
     env_file:
       - ./filter-bot/.env
+    environment:
+      - MODERATION_TTL_MINUTES=${MODERATION_TTL_MINUTES:-60}
     depends_on:
       - redis
     restart: unless-stopped

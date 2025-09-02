@@ -22,6 +22,8 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 MODERATION_CHAT_ID = int(os.getenv("MODERATION_CHAT_ID", "0"))
 MODERATION_QUEUE = "moderation_queue"
 APPROVED_QUEUE = "approved_queue"
+# TTL из переменной окружения, по умолчанию 60 минут
+MODERATION_TTL = int(os.getenv("MODERATION_TTL_MINUTES", "60")) * 60
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
@@ -164,12 +166,16 @@ async def send_post_for_moderation(post: dict, message_id: str):
         except Exception as e:
             logger.error(f"[MODERATION_DETAILS] Ошибка при отправке текстового сообщения: {e}")
     if sent_msg:
-        await redis.set(f"mod_msg:{sent_msg.message_id}", message_id, ex=3600)
-    await redis.set(f"mod_post:{message_id}", json.dumps(post, ensure_ascii=False), ex=3600)
-    await redis.set(f"moderation_status:{message_id}", "pending", ex=3600)
-    # Новый ключ для автоудаления через 24 часа
-    await redis.set(f"mod_expire:{message_id}", 1, ex=24*3600)
-    logger.info(f"[MODERATION_DETAILS] Обработка поста завершена, статус: pending, установлен mod_expire на 24ч")
+        await redis.set(f"mod_msg:{sent_msg.message_id}", message_id, ex=MODERATION_TTL)
+        # Сохраняем Telegram message ID для автоудаления
+        await redis.set(f"mod_telegram_msg:{message_id}", sent_msg.message_id, ex=MODERATION_TTL)
+        logger.info(f"[MODERATION_DETAILS] Сохранен Telegram message ID: {sent_msg.message_id}")
+    
+    await redis.set(f"mod_post:{message_id}", json.dumps(post, ensure_ascii=False), ex=MODERATION_TTL)
+    await redis.set(f"moderation_status:{message_id}", "pending", ex=MODERATION_TTL)
+    # Ключ для автоудаления через 60 минут
+    await redis.set(f"mod_expire:{message_id}", 1, ex=MODERATION_TTL)
+    logger.info(f"[MODERATION_DETAILS] Обработка поста завершена, TTL установлен на {MODERATION_TTL/60} минут")
 
 @dp.callback_query(F.data.startswith("approve:"))
 async def approve_post(callback: CallbackQuery):
@@ -190,7 +196,7 @@ async def approve_post(callback: CallbackQuery):
         logger.error(f"[APPROVE] Ошибка при логировании: {e}")
     
     await redis.rpush(APPROVED_QUEUE, post_json)
-    await redis.set(f"moderation_status:{message_id}", "approved", ex=3600)
+    await redis.set(f"moderation_status:{message_id}", "approved", ex=MODERATION_TTL)
     await callback.answer("Пост одобрен!")
     await callback.message.delete()
 
@@ -230,7 +236,7 @@ async def reject_post(callback: CallbackQuery):
         except Exception as e:
             logger.error(f"[MODERATION_COUNTER] Ошибка при обработке медиа в отклоненном посте: {e}")
     
-    await redis.set(f"moderation_status:{message_id}", "rejected", ex=3600)
+    await redis.set(f"moderation_status:{message_id}", "rejected", ex=MODERATION_TTL)
     await callback.answer("Пост отклонён!")
     await callback.message.delete()
 
@@ -254,8 +260,8 @@ async def process_new_text(message: Message, state: FSMContext):
         return
     post = json.loads(post_json)
     post["text"] = message.text
-    await redis.set(f"mod_post:{message_id}", json.dumps(post, ensure_ascii=False), ex=3600)
-    await redis.set(f"moderation_status:{message_id}", "edited", ex=3600)
+    await redis.set(f"mod_post:{message_id}", json.dumps(post, ensure_ascii=False), ex=MODERATION_TTL)
+    await redis.set(f"moderation_status:{message_id}", "edited", ex=MODERATION_TTL)
     # Обновляем сообщение с кнопками
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -320,7 +326,7 @@ async def moderation_expiry_worker():
                     continue
                 # Ключа mod_expire нет — пост устарел, надо удалить
                 post_json = await redis.get(key)
-                logger.info(f"[EXPIRY] Пост {message_id} устарел (>24ч), удаляю из модерации")
+                logger.info(f"[EXPIRY] Пост {message_id} устарел (>60 минут), удаляю из модерации")
                 if post_json:
                     try:
                         post = json.loads(post_json)
@@ -342,25 +348,27 @@ async def moderation_expiry_worker():
                                     logger.error(f"[EXPIRY][MODERATION_COUNTER] Ошибка при декременте счётчика для {local_path}: {e}")
                     except Exception as e:
                         logger.error(f"[EXPIRY] Ошибка при обработке медиа устаревшего поста: {e}")
+                # --- Удаление сообщения в Telegram ---
+                telegram_msg_id = await redis.get(f"mod_telegram_msg:{message_id}")
+                if telegram_msg_id:
+                    try:
+                        await bot.delete_message(MODERATION_CHAT_ID, int(telegram_msg_id))
+                        logger.info(f"[EXPIRY] Удалено сообщение из Telegram: {telegram_msg_id}")
+                    except Exception as e:
+                        logger.warning(f"[EXPIRY] Не удалось удалить сообщение {telegram_msg_id}: {e}")
+                
                 # Удаляем все ключи, связанные с этим постом
                 await redis.delete(key)
                 await redis.delete(f"moderation_status:{message_id}")
-                # --- Удаление сообщения в Telegram ---
-                mod_msg_id = await redis.get(f"mod_msg:{message_id}")
+                await redis.delete(f"mod_telegram_msg:{message_id}")
                 await redis.delete(f"mod_msg:{message_id}")
-                if mod_msg_id:
-                    try:
-                        telegram_message_id = int(mod_msg_id.decode() if hasattr(mod_msg_id, 'decode') else mod_msg_id)
-                        await bot.delete_message(MODERATION_CHAT_ID, telegram_message_id)
-                        logger.info(f"[EXPIRY][TG] Сообщение {telegram_message_id} в Telegram удалено (auto-expire)")
-                    except Exception as e:
-                        logger.warning(f"[EXPIRY][TG] Не удалось удалить сообщение {mod_msg_id} в Telegram: {e}")
                 logger.info(f"[EXPIRY] Пост {message_id} и все связанные ключи удалены из модерации (auto-expire)")
         except Exception as e:
             logger.error(f"[EXPIRY] Ошибка в воркере автоудаления: {e}")
         await asyncio.sleep(60)
 
 async def main():
+    logger.info(f"[CONFIG] TTL модерации установлен на {MODERATION_TTL/60} минут ({MODERATION_TTL} секунд)")
     await bot.delete_webhook(drop_pending_updates=True)
     asyncio.create_task(moderation_worker())
     asyncio.create_task(moderation_expiry_worker())

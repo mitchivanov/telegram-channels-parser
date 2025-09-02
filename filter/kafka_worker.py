@@ -23,6 +23,8 @@ REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
 MODERATION_QUEUE = "moderation_queue"
 APPROVED_QUEUE = "approved_queue"
 PAUSE_KEY_PREFIX = "filtering:paused:"
+# TTL из переменной окружения, по умолчанию 60 минут
+MODERATION_TTL = int(os.environ.get("MODERATION_TTL_MINUTES", "60")) * 60
 
 # Словарь соответствия ID каналов их названиям
 CHANNEL_NAMES = {
@@ -77,8 +79,8 @@ async def add_to_moderation_queue_redis(redis, post, target_channel):
                 # Устанавливаем TTL только если ключ новый (не имеет TTL)
                 ttl = await redis.ttl(f"moderation:{local_path}")
                 if ttl == -1:  # Ключ существует, но без TTL
-                    await redis.expire(f"moderation:{local_path}", 86400)  # 24 часа
-                    logger.info(f"[MODERATION_COUNTER] Установлен TTL 24 часа для счетчика модерации {local_path}")
+                    await redis.expire(f"moderation:{local_path}", MODERATION_TTL)
+                    logger.info(f"[MODERATION_COUNTER] Установлен TTL {MODERATION_TTL/60} минут для счетчика модерации {local_path}")
             except Exception as e:
                 logger.error(f"[MODERATION_COUNTER] Ошибка при инкременте счетчика модерации для {local_path}: {e}")
             media_out.append(m)
@@ -183,6 +185,7 @@ async def approved_queue_worker(redis, producer):
             await asyncio.sleep(1)
 
 async def kafka_filter_worker():
+    logger.info(f"[CONFIG] TTL модерации установлен на {MODERATION_TTL/60} минут ({MODERATION_TTL} секунд)")
     logger.info("[KAFKA] Запуск consumer и producer...")
     consumer = AIOKafkaConsumer(
         RAW_TOPIC,
