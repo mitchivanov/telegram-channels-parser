@@ -24,6 +24,7 @@ MODERATION_QUEUE = "moderation_queue"
 APPROVED_QUEUE = "approved_queue"
 # TTL из переменной окружения, по умолчанию 60 минут
 MODERATION_TTL = int(os.getenv("MODERATION_TTL_MINUTES", "60")) * 60
+EXPIRE_GRACE_SECONDS = int(os.getenv("MODERATION_EXPIRE_GRACE_SECONDS", "86400"))
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
@@ -167,11 +168,24 @@ async def send_post_for_moderation(post: dict, message_id: str):
             logger.error(f"[MODERATION_DETAILS] Ошибка при отправке текстового сообщения: {e}")
     if sent_msg:
         await redis.set(f"mod_msg:{sent_msg.message_id}", message_id, ex=MODERATION_TTL)
-        # Сохраняем Telegram message ID для автоудаления
-        await redis.set(f"mod_telegram_msg:{message_id}", sent_msg.message_id, ex=MODERATION_TTL + 300)  # +5 минут для обработки удаления
+        # Сохраняем Telegram message ID для автоудаления, с дополнительным запасом
+        await redis.set(
+            f"mod_telegram_msg:{message_id}",
+            sent_msg.message_id,
+            ex=MODERATION_TTL + EXPIRE_GRACE_SECONDS
+        )
         logger.info(f"[MODERATION_DETAILS] Сохранен Telegram message ID: {sent_msg.message_id}")
-    
-    await redis.set(f"mod_post:{message_id}", json.dumps(post, ensure_ascii=False), ex=MODERATION_TTL + 300)  # +5 минут для обработки
+
+    # Сохраняем резервно telegram_msg_id внутри самого поста, чтобы иметь фолбэк
+    post_to_store = dict(post)
+    if sent_msg:
+        post_to_store["mod_telegram_msg_id"] = sent_msg.message_id
+
+    await redis.set(
+        f"mod_post:{message_id}",
+        json.dumps(post_to_store, ensure_ascii=False),
+        ex=MODERATION_TTL + EXPIRE_GRACE_SECONDS
+    )
     await redis.set(f"moderation_status:{message_id}", "pending", ex=MODERATION_TTL)
     # Ключ для автоудаления через 60 минут
     await redis.set(f"mod_expire:{message_id}", 1, ex=MODERATION_TTL)
@@ -260,7 +274,7 @@ async def process_new_text(message: Message, state: FSMContext):
         return
     post = json.loads(post_json)
     post["text"] = message.text
-    await redis.set(f"mod_post:{message_id}", json.dumps(post, ensure_ascii=False), ex=MODERATION_TTL + 300)  # +5 минут для обработки
+    await redis.set(f"mod_post:{message_id}", json.dumps(post, ensure_ascii=False), ex=MODERATION_TTL + EXPIRE_GRACE_SECONDS)
     await redis.set(f"moderation_status:{message_id}", "edited", ex=MODERATION_TTL)
     # Обновляем сообщение с кнопками
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -279,7 +293,6 @@ async def process_new_text(message: Message, state: FSMContext):
 
 async def moderation_worker():
     global redis
-    redis = aioredis.from_url(REDIS_URL, decode_responses=True)
     logger.info("[MODERATION] Стартую воркер очереди модерации...")
     while True:
         post_json = await redis.lpop(MODERATION_QUEUE)
@@ -352,6 +365,15 @@ async def moderation_expiry_worker():
                         logger.error(f"[EXPIRY] Ошибка при обработке медиа устаревшего поста: {e}")
                 # --- Удаление сообщения в Telegram ---
                 telegram_msg_id = await redis.get(f"mod_telegram_msg:{message_id}")
+                # Фолбэк из сохранённого поста, если отдельный ключ не найден
+                if not telegram_msg_id and post_json:
+                    try:
+                        _p = json.loads(post_json)
+                        if _p.get("mod_telegram_msg_id"):
+                            telegram_msg_id = _p.get("mod_telegram_msg_id")
+                            logger.info(f"[EXPIRY] Использую резервный telegram_msg_id из mod_post: {telegram_msg_id}")
+                    except Exception:
+                        pass
                 if telegram_msg_id:
                     try:
                         await bot.delete_message(MODERATION_CHAT_ID, int(telegram_msg_id))
@@ -370,7 +392,11 @@ async def moderation_expiry_worker():
         await asyncio.sleep(10)
 
 async def main():
+    global redis
     logger.info(f"[CONFIG] TTL модерации установлен на {MODERATION_TTL/60} минут ({MODERATION_TTL} секунд)")
+    logger.info(f"[CONFIG] EXPIRE_GRACE_SECONDS: {EXPIRE_GRACE_SECONDS}")
+    # Инициализируем Redis один раз до запуска воркеров
+    redis = aioredis.from_url(REDIS_URL, decode_responses=True)
     await bot.delete_webhook(drop_pending_updates=True)
     asyncio.create_task(moderation_worker())
     asyncio.create_task(moderation_expiry_worker())

@@ -277,6 +277,7 @@ services:
       - ./filter-bot/.env
     environment:
       - MODERATION_TTL_MINUTES=${MODERATION_TTL_MINUTES:-60}
+      - MODERATION_EXPIRE_GRACE_SECONDS=${MODERATION_EXPIRE_GRACE_SECONDS}
     depends_on:
       - redis
     restart: unless-stopped
