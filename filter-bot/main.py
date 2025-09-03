@@ -67,6 +67,7 @@ async def send_post_for_moderation(post: dict, message_id: str):
         ]
     ])
     sent_msg = None
+    media_group_message_ids = []
     if media:
         # Одиночное медиа
         if len(media) == 1:
@@ -142,6 +143,17 @@ async def send_post_for_moderation(post: dict, message_id: str):
                 try:
                     sent_msgs = await bot.send_media_group(MODERATION_CHAT_ID, group)
                     logger.info(f"[MODERATION_DETAILS] Медиагруппа успешно отправлена")
+                    # Сохраняем IDs всех сообщений медиагруппы для последующего удаления
+                    try:
+                        media_group_message_ids = [m.message_id for m in sent_msgs]
+                        await redis.set(
+                            f"mod_telegram_media_ids:{message_id}",
+                            json.dumps(media_group_message_ids, ensure_ascii=False),
+                            ex=MODERATION_TTL + EXPIRE_GRACE_SECONDS
+                        )
+                        logger.info(f"[MODERATION_DETAILS] Сохранены message_id медиагруппы: {media_group_message_ids}")
+                    except Exception as e:
+                        logger.warning(f"[MODERATION_DETAILS] Не удалось сохранить IDs медиагруппы: {e}")
                     # Сразу после медиагруппы отправляем отдельное сообщение с кнопками
                     try:
                         sent_msg = await bot.send_message(
@@ -180,6 +192,8 @@ async def send_post_for_moderation(post: dict, message_id: str):
     post_to_store = dict(post)
     if sent_msg:
         post_to_store["mod_telegram_msg_id"] = sent_msg.message_id
+    if media_group_message_ids:
+        post_to_store["mod_telegram_media_ids"] = media_group_message_ids
 
     await redis.set(
         f"mod_post:{message_id}",
@@ -212,7 +226,27 @@ async def approve_post(callback: CallbackQuery):
     await redis.rpush(APPROVED_QUEUE, post_json)
     await redis.set(f"moderation_status:{message_id}", "approved", ex=MODERATION_TTL)
     await callback.answer("Пост одобрен!")
-    await callback.message.delete()
+    # Удаляем сообщение с кнопками
+    try:
+        await callback.message.delete()
+    except Exception as e:
+        logger.warning(f"[APPROVE] Не удалось удалить сообщение с кнопками: {e}")
+    # Удаляем все сообщения медиагруппы, если были
+    try:
+        media_ids_json = await redis.get(f"mod_telegram_media_ids:{message_id}")
+        if not media_ids_json and post.get("mod_telegram_media_ids"):
+            media_ids_json = json.dumps(post.get("mod_telegram_media_ids"))
+        if media_ids_json:
+            media_ids = json.loads(media_ids_json)
+            for mid in media_ids:
+                try:
+                    await bot.delete_message(MODERATION_CHAT_ID, int(mid))
+                    logger.info(f"[APPROVE] Удалено сообщение медиагруппы: {mid}")
+                except Exception as e:
+                    logger.warning(f"[APPROVE] Не удалось удалить сообщение медиагруппы {mid}: {e}")
+        await redis.delete(f"mod_telegram_media_ids:{message_id}")
+    except Exception as e:
+        logger.warning(f"[APPROVE] Ошибка при удалении медиагруппы: {e}")
 
 @dp.callback_query(F.data.startswith("reject:"))
 async def reject_post(callback: CallbackQuery):
@@ -252,7 +286,27 @@ async def reject_post(callback: CallbackQuery):
     
     await redis.set(f"moderation_status:{message_id}", "rejected", ex=MODERATION_TTL)
     await callback.answer("Пост отклонён!")
-    await callback.message.delete()
+    # Удаляем сообщение с кнопками
+    try:
+        await callback.message.delete()
+    except Exception as e:
+        logger.warning(f"[REJECT] Не удалось удалить сообщение с кнопками: {e}")
+    # Удаляем все сообщения медиагруппы, если были
+    try:
+        media_ids_json = await redis.get(f"mod_telegram_media_ids:{message_id}")
+        if not media_ids_json and post.get("mod_telegram_media_ids"):
+            media_ids_json = json.dumps(post.get("mod_telegram_media_ids"))
+        if media_ids_json:
+            media_ids = json.loads(media_ids_json)
+            for mid in media_ids:
+                try:
+                    await bot.delete_message(MODERATION_CHAT_ID, int(mid))
+                    logger.info(f"[REJECT] Удалено сообщение медиагруппы: {mid}")
+                except Exception as e:
+                    logger.warning(f"[REJECT] Не удалось удалить сообщение медиагруппы {mid}: {e}")
+        await redis.delete(f"mod_telegram_media_ids:{message_id}")
+    except Exception as e:
+        logger.warning(f"[REJECT] Ошибка при удалении медиагруппы: {e}")
 
 @dp.callback_query(F.data.startswith("edit:"))
 async def edit_post(callback: CallbackQuery, state: FSMContext):
@@ -380,11 +434,33 @@ async def moderation_expiry_worker():
                         logger.info(f"[EXPIRY] Удалено сообщение из Telegram: {telegram_msg_id}")
                     except Exception as e:
                         logger.warning(f"[EXPIRY] Не удалось удалить сообщение {telegram_msg_id}: {e}")
+                # Удаляем все сообщения медиагруппы, если были
+                try:
+                    media_ids_json = await redis.get(f"mod_telegram_media_ids:{message_id}")
+                    if not media_ids_json and post_json:
+                        try:
+                            _p = json.loads(post_json)
+                            if _p.get("mod_telegram_media_ids"):
+                                media_ids_json = json.dumps(_p.get("mod_telegram_media_ids"))
+                                logger.info("[EXPIRY] Использую резервные media_ids из mod_post")
+                        except Exception:
+                            pass
+                    if media_ids_json:
+                        media_ids = json.loads(media_ids_json)
+                        for mid in media_ids:
+                            try:
+                                await bot.delete_message(MODERATION_CHAT_ID, int(mid))
+                                logger.info(f"[EXPIRY] Удалено сообщение медиагруппы: {mid}")
+                            except Exception as e:
+                                logger.warning(f"[EXPIRY] Не удалось удалить сообщение медиагруппы {mid}: {e}")
+                except Exception as e:
+                    logger.warning(f"[EXPIRY] Ошибка при удалении сообщений медиагруппы: {e}")
                 
                 # Удаляем все ключи, связанные с этим постом
                 await redis.delete(key)
                 await redis.delete(f"moderation_status:{message_id}")
                 await redis.delete(f"mod_telegram_msg:{message_id}")
+                await redis.delete(f"mod_telegram_media_ids:{message_id}")
                 await redis.delete(f"mod_msg:{message_id}")
                 logger.info(f"[EXPIRY] Пост {message_id} и все связанные ключи удалены из модерации (auto-expire)")
         except Exception as e:
