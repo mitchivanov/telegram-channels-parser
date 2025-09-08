@@ -1,5 +1,11 @@
 version: '3.8'
 
+x-logging: &default-logging
+  driver: "local"
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   kafka:
     image: bitnami/kafka:latest
@@ -30,6 +36,7 @@ services:
       retries: 10
     cpus: "2.0"
     mem_limit: 2g
+    logging: *default-logging
 
   redis:
     image: redis:7
@@ -37,6 +44,7 @@ services:
     # ports:  # Removed external port exposure
     cpus: "0.5"
     mem_limit: 512m
+    logging: *default-logging
 
   parser:
     build: ./parser
@@ -58,6 +66,7 @@ services:
     restart: unless-stopped
     cpus: "1.0"
     mem_limit: 1g
+    logging: *default-logging
 
   notifications-bot:
     build: ./notifications-bot
@@ -72,6 +81,7 @@ services:
     restart: unless-stopped
     cpus: "0.5"
     mem_limit: 512m
+    logging: *default-logging
 
   filter-backend:
     build:
@@ -101,6 +111,7 @@ services:
       - parser_temp:/app/temp
     cpus: "1.0"
     mem_limit: 1g
+    logging: *default-logging
 
   filter-worker:
     build:
@@ -128,6 +139,7 @@ services:
       - parser_temp:/app/temp
     cpus: "1.0"
     mem_limit: 1g
+    logging: *default-logging
 
   filter-frontend:
     build:
@@ -142,6 +154,7 @@ services:
     restart: unless-stopped
     cpus: "0.5"
     mem_limit: 512m
+    logging: *default-logging
 
   channels-bot:
     build:
@@ -162,6 +175,7 @@ services:
       - parser_temp:/app/temp
     cpus: "1.0"
     mem_limit: 1g
+    logging: *default-logging
 
   channels-cleanup-worker:
     build:
@@ -178,6 +192,7 @@ services:
       - parser_temp:/app/temp
     cpus: "0.5"
     mem_limit: 512m
+    logging: *default-logging
 
   db:
     image: postgres:15
@@ -191,6 +206,7 @@ services:
       - db_data:/var/lib/postgresql/data
     cpus: "2"
     mem_limit: 2g
+    logging: *default-logging
     restart: unless-stopped
     # Healthcheck для мониторинга состояния БД
     healthcheck:
@@ -211,6 +227,7 @@ services:
         condition: service_healthy
     cpus: "0.5"
     mem_limit: 512m
+    logging: *default-logging
 
   # Monitoring stack - disabled for now
   # loki:
@@ -285,6 +302,7 @@ services:
       - parser_temp:/app/temp
     cpus: "0.5"
     mem_limit: 512m
+    logging: *default-logging
 
 volumes:
   kafka_data:
