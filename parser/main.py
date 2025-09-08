@@ -1070,8 +1070,10 @@ class ParserCore:
 async def main():
     # Подключение к Postgres и инициализация схемы
     state_manager = await PostgresStateManager.create()
+    # Инициализацию схемы оборачиваем в бэкофф — БД может быть доступна, но занята recovery
     async with state_manager.pool.acquire() as conn:
-        await init_db_schema(conn)
+        await async_backoff(conn.execute, "SELECT 1", logger=logging.getLogger("parser.core"))
+        await async_backoff(init_db_schema, conn, logger=logging.getLogger("parser.core"))
     parser = ParserCore(state_manager)
     try:
         await parser.start()

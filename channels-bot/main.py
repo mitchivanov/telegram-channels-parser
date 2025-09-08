@@ -15,6 +15,7 @@ import time
 load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+MODERATION_TTL = int(os.environ.get("MODERATION_TTL_MINUTES", "60")) * 60
 KAFKA_BOOTSTRAP_SERVERS = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
 KAFKA_TOPICS = os.environ.get("KAFKA_TOPICS", "channel1_posts,channel2_posts,channel3_posts").split(",")
 CHANNEL1_ID = os.environ["CHANNEL1_ID"]  # Например, -1001234567890
@@ -128,7 +129,7 @@ async def send_post(bot, channel_id, post, redis=None, max_retries=5, _attempt=1
                                     count = await redis.decr(f"file:{local_path}")
                                     logging.debug(f"[REDIS] DECR file:{local_path} -> {count}")
                                     if count <= 0:
-                                        await redis.set(f'delete_after:{local_path}', 1, ex=60)
+                                        await redis.set(f'delete_after:{local_path}', 1, ex=MODERATION_TTL)
                                         await redis.delete(f"file:{local_path}")
                                         logging.info(f"[BOT] Файл {local_path} помечен на удаление через 1 минуту (refcount=0)")
                                     else:
@@ -190,7 +191,7 @@ async def send_post(bot, channel_id, post, redis=None, max_retries=5, _attempt=1
                                     count = await redis.decr(f"file:{local_path}")
                                     logging.debug(f"[REDIS] DECR file:{local_path} -> {count}")
                                     if count <= 0:
-                                        await redis.set(f'delete_after:{local_path}', 1, ex=60)
+                                        await redis.set(f'delete_after:{local_path}', 1, ex=MODERATION_TTL)
                                         await redis.delete(f"file:{local_path}")
                                         logging.info(f"[BOT] Файл {local_path} помечен на удаление через 1 минуту (refcount=0)")
                                     else:

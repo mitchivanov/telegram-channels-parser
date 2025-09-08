@@ -411,7 +411,8 @@ async def moderation_expiry_worker():
                                         logger.info(f"[EXPIRY][MODERATION_COUNTER] Счётчик модерации для {local_path} удалён (0)")
                                         file_count = await redis.get(f"file:{local_path}")
                                         if not file_count or int(file_count) <= 0:
-                                            await redis.set(f'delete_after:{local_path}', 1, ex=300)
+                                            await redis.set(f'delete_after:{local_path}', 1, ex=MODERATION_TTL)
+                                            await redis.set(f'delete_after:{local_path}', 1, ex=MODERATION_TTL)
                                             logger.info(f"[EXPIRY][MODERATION_COUNTER] Файл {local_path} помечен на удаление через 5 минут (оба счётчика 0)")
                                 except Exception as e:
                                     logger.error(f"[EXPIRY][MODERATION_COUNTER] Ошибка при декременте счётчика для {local_path}: {e}")

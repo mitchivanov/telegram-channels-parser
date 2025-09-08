@@ -172,7 +172,7 @@ async def approved_queue_worker(redis, producer):
                                 # Если нет счетчика file:* (или он 0), помечаем файл на удаление
                                 if not file_count or int(file_count) <= 0:
                                     # Помечаем на удаление через 5 минут
-                                    await redis.set(f'delete_after:{local_path}', 1, ex=300)
+                                    await redis.set(f'delete_after:{local_path}', 1, ex=MODERATION_TTL)
                                     logger.info(f"[MODERATION_COUNTER] Файл {local_path} помечен на удаление через 5 минут (оба счетчика 0)")
                         except Exception as e:
                             logger.error(f"[MODERATION_COUNTER] Ошибка при декременте счетчика модерации для {local_path}: {e}")
@@ -346,7 +346,7 @@ async def kafka_filter_worker():
                                 file_counter = await redis.get(f"file:{f}")
                                 if not file_counter:
                                     # Если счетчика нет, помечаем файл на удаление через 5 минут
-                                    await redis.set(f'delete_after:{f}', 1, ex=300)
+                                    await redis.set(f'delete_after:{f}', 1, ex=MODERATION_TTL)
                                     logger.info(f"[CLEANUP] Файл {f} не прошел фильтрацию, помечен на удаление через 5 минут")
                             except Exception as e:
                                 logger.warning(f"[CLEANUP] Ошибка при обработке файла без счетчика {f}: {e}")
