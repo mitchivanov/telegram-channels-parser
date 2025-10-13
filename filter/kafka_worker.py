@@ -265,15 +265,28 @@ async def kafka_filter_worker():
                         if target_channel in filters:
                             logger.info(f"[FILTER] Найден фильтр для канала {target_channel}, применяю фильтрацию")
                             rule = filters[target_channel]
-                            # --- Кэшбек фильтрация ---
+                            
+                            # --- 1. Стоп-слова (быстрая проверка сначала) ---
+                            if rule.stopwords and any(sw.lower() in text for sw in rule.stopwords):
+                                logger.info(f"[FILTER] Пост не прошёл по стоп-словам для {target_channel}")
+                                skip = True
+                            
+                            # --- 2. Ключевые слова ---
+                            if not skip and rule.keywords and not any(kw.lower() in text for kw in rule.keywords):
+                                logger.info(f"[FILTER] Пост не прошёл по ключевым словам для {target_channel}")
+                                skip = True
+                            
+                            # --- 3. Кэшбек фильтрация (если не пропущен по предыдущим проверкам) ---
                             min_cb = getattr(rule, 'min_cashback_percent', None)
                             max_cb = getattr(rule, 'max_cashback_percent', None)
                             use_cashback = min_cb is not None or max_cb is not None
-                            cashback_ok = True
-                            if use_cashback:
+                            
+                            if not skip and use_cashback:
                                 percents = extract_cashback_percent(text)
                                 logger.info(f"[CASHBACK] Извлечённые проценты: {percents} для канала {target_channel}")
+                                
                                 if not percents:
+                                    # Не удалось извлечь процент кэшбэка
                                     if rule.moderation_required:
                                         channel_name = CHANNEL_NAMES.get(target_channel, target_channel)
                                         logger.info(f"[MODERATION][CASHBACK] Не удалось извлечь процент кэшбэка, отправляю на модерацию для {target_channel} ({channel_name})")
@@ -285,28 +298,29 @@ async def kafka_filter_worker():
                                         logger.info(f"[CASHBACK] Не удалось извлечь процент кэшбэка, пост пропущен для {target_channel}")
                                         skip = True
                                 else:
+                                    # Проверяем, попадает ли хотя бы один процент в диапазон
                                     min_v = min_cb if min_cb is not None else 0
                                     max_v = max_cb if max_cb is not None else 100
                                     cashback_ok = any(min_v <= p <= max_v for p in percents)
+                                    
                                     if not cashback_ok:
-                                        logger.info(f"[CASHBACK] Пост не прошёл по диапазону кэшбэка {min_v}-{max_v}% для {target_channel}")
+                                        logger.info(f"[CASHBACK] Пост не прошёл по диапазону кэшбэка {min_v}-{max_v}% (найдены проценты: {percents}) для {target_channel}")
                                         skip = True
-                            # --- Ключевые слова ---
-                            if not skip and rule.keywords and not any(kw.lower() in text for kw in rule.keywords):
-                                logger.info(f"[FILTER] Пост не прошёл по ключевым словам для {target_channel}")
-                                skip = True
-                            if not skip and rule.stopwords and any(sw.lower() in text for sw in rule.stopwords):
-                                logger.info(f"[FILTER] Пост не прошёл по стоп-словам для {target_channel}")
-                                skip = True
-                            if not skip and rule.remove_channel_links:
-                                logger.info(f"[FILTER] Флаг remove_channel_links игнорируется для {target_channel} (функция отключена)")
-                            if not skip and rule.moderation_required and not use_cashback:
+                                    else:
+                                        logger.info(f"[CASHBACK] Пост прошёл проверку кэшбэка: {[p for p in percents if min_v <= p <= max_v]} в диапазоне {min_v}-{max_v}% для {target_channel}")
+                            
+                            # --- 4. Модерация (если не пропущен и требуется) ---
+                            if not skip and rule.moderation_required:
                                 channel_name = CHANNEL_NAMES.get(target_channel, target_channel)
                                 logger.info(f"[MODERATION] Требуется модерация для {target_channel} ({channel_name}), отправляю в Redis moderation_queue")
                                 await add_to_moderation_queue_redis(redis, post_filtered, target_channel)
-                                sent_to_moderation = True  # Устанавливаем флаг отправки на модерацию
+                                sent_to_moderation = True
                                 skip = True
                                 continue
+                            
+                            # --- 5. Флаг удаления ссылок (игнорируется) ---
+                            if not skip and rule.remove_channel_links:
+                                logger.info(f"[FILTER] Флаг remove_channel_links игнорируется для {target_channel} (функция отключена)")
                         else:
                             logger.warning(f"[FILTER] Фильтр для канала {target_channel} не найден — сообщение отброшено!")
                             continue
