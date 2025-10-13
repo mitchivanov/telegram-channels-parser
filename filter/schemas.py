@@ -6,6 +6,8 @@ class FilterBase(BaseModel):
     stopwords: List[str] = Field(default_factory=list, example=["spam", "casino"])
     remove_channel_links: bool = Field(default=True, example=True)
     moderation_required: bool = Field(default=False, example=False)
+    min_cashback_percent: Optional[float] = Field(default=None, example=5.0)
+    max_cashback_percent: Optional[float] = Field(default=None, example=50.0)
 
 class FilterCreate(FilterBase):
     channel: str

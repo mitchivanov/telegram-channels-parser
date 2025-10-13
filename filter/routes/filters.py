@@ -59,7 +59,9 @@ async def get_channels(db: AsyncSession = Depends(get_db)):
                         "keywords": filter_item.keywords or [],
                         "stopwords": filter_item.stopwords or [],
                         "remove_channel_links": filter_item.remove_channel_links,
-                        "moderation_required": filter_item.moderation_required
+                        "moderation_required": filter_item.moderation_required,
+                        "min_cashback_percent": filter_item.min_cashback_percent,
+                        "max_cashback_percent": filter_item.max_cashback_percent
                     }
                     channel_map[filter_item.channel_id]["filters"].append(filter_dict)
         
@@ -94,9 +96,19 @@ async def set_filter(rule: FilterCreate, db: AsyncSession = Depends(get_db)):
             db_filter.stopwords = rule.stopwords
             db_filter.remove_channel_links = rule.remove_channel_links
             db_filter.moderation_required = rule.moderation_required
+            db_filter.min_cashback_percent = rule.min_cashback_percent
+            db_filter.max_cashback_percent = rule.max_cashback_percent
         else:
             logging.info(f"Фильтр не найден, создаем новый")
-            db_filter = Filter(channel_id=channel_obj.id, keywords=rule.keywords, stopwords=rule.stopwords, remove_channel_links=rule.remove_channel_links, moderation_required=rule.moderation_required)
+            db_filter = Filter(
+                channel_id=channel_obj.id, 
+                keywords=rule.keywords, 
+                stopwords=rule.stopwords, 
+                remove_channel_links=rule.remove_channel_links, 
+                moderation_required=rule.moderation_required,
+                min_cashback_percent=rule.min_cashback_percent,
+                max_cashback_percent=rule.max_cashback_percent
+            )
             db.add(db_filter)
         
         await db.commit()

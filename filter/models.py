@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, Text
+from sqlalchemy import Column, Integer, String, Boolean, Text, Float
 from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from db import Base
@@ -19,6 +19,8 @@ class Filter(Base, AsyncAttrs):
     stopwords = Column(PG_ARRAY(String), default=[])
     remove_channel_links = Column(Boolean, default=True)
     moderation_required = Column(Boolean, default=False)
+    min_cashback_percent = Column(Float, nullable=True)
+    max_cashback_percent = Column(Float, nullable=True)
     channel_obj = relationship("Channel", back_populates="filters")
 
 class ModerationQueue(Base, AsyncAttrs):

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Box, TextField, Button, Checkbox, FormControlLabel, Stack } from '@mui/material';
 
 interface Filter {
@@ -34,8 +34,36 @@ const FilterForm: React.FC<Props> = ({ filter, channelId, onSave, onCancel }) =>
   const [stopwords, setStopwords] = useState<string>(filter?.stopwords?.join(', ') || '');
   const [removeLinks, setRemoveLinks] = useState<boolean>(filter?.remove_channel_links ?? true);
   const [moderation, setModeration] = useState<boolean>(filter?.moderation_required ?? false);
-  const [minCashback, setMinCashback] = useState<string>(filter?.min_cashback_percent !== undefined ? String(filter.min_cashback_percent) : '');
-  const [maxCashback, setMaxCashback] = useState<string>(filter?.max_cashback_percent !== undefined ? String(filter.max_cashback_percent) : '');
+  const [minCashback, setMinCashback] = useState<string>(
+    filter?.min_cashback_percent !== undefined && filter?.min_cashback_percent !== null 
+      ? String(filter.min_cashback_percent) 
+      : ''
+  );
+  const [maxCashback, setMaxCashback] = useState<string>(
+    filter?.max_cashback_percent !== undefined && filter?.max_cashback_percent !== null 
+      ? String(filter.max_cashback_percent) 
+      : ''
+  );
+
+  // Обновляем поля при изменении filter prop
+  useEffect(() => {
+    if (filter) {
+      setKeywords(filter.keywords?.join(', ') || '');
+      setStopwords(filter.stopwords?.join(', ') || '');
+      setRemoveLinks(filter.remove_channel_links ?? true);
+      setModeration(filter.moderation_required ?? false);
+      setMinCashback(
+        filter.min_cashback_percent !== undefined && filter.min_cashback_percent !== null 
+          ? String(filter.min_cashback_percent) 
+          : ''
+      );
+      setMaxCashback(
+        filter.max_cashback_percent !== undefined && filter.max_cashback_percent !== null 
+          ? String(filter.max_cashback_percent) 
+          : ''
+      );
+    }
+  }, [filter]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -52,8 +80,8 @@ const FilterForm: React.FC<Props> = ({ filter, channelId, onSave, onCancel }) =>
       stopwords: stopwords.split(',').map(s => s.trim()).filter(Boolean),
       remove_channel_links: removeLinks,
       moderation_required: moderation,
-      min_cashback_percent: minCashback ? Number(minCashback) : undefined,
-      max_cashback_percent: maxCashback ? Number(maxCashback) : undefined,
+      min_cashback_percent: minCashback.trim() ? Number(minCashback) : undefined,
+      max_cashback_percent: maxCashback.trim() ? Number(maxCashback) : undefined,
     };
     onSave(filterData);
   };
