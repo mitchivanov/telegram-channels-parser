@@ -67,13 +67,9 @@ const FilterForm: React.FC<Props> = ({ filter, channelId, onSave, onCancel }) =>
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const cashbackVariants = ['кэшбек', 'кешбек', 'cashback', 'кэшбэк', 'кешбэк'];
-    let kwArr = keywords.split(',').map(s => s.trim()).filter(Boolean);
-    cashbackVariants.forEach(variant => {
-      if (!kwArr.some(kw => kw.toLowerCase() === variant)) {
-        kwArr.push(variant);
-      }
-    });
+    // Просто берём то, что пользователь ввёл в поле, БЕЗ автоматических добавлений
+    const kwArr = keywords.split(',').map(s => s.trim()).filter(Boolean);
+    
     const filterData: FilterCreate = {
       channel: String(channelId),
       keywords: kwArr,
