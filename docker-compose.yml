@@ -77,6 +77,8 @@ services:
       - parser_session:/app/session
       - ./credentials.json:/app/credentials.json:ro
     depends_on:
+      parser:
+        condition: service_started
       db:
         condition: service_healthy
     env_file:

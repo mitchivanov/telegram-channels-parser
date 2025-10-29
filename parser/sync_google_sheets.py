@@ -93,6 +93,12 @@ def get_channels_from_google_sheets():
         
         # Открываем таблицу
         spreadsheet = client.open_by_key(GOOGLE_SHEETS_ID)
+        
+        # Показываем доступные листы для отладки
+        available_sheets = [ws.title for ws in spreadsheet.worksheets()]
+        logger.info(f"Available sheets in spreadsheet: {available_sheets}")
+        logger.info(f"Looking for sheet: '{GOOGLE_SHEET_NAME}'")
+        
         worksheet = spreadsheet.worksheet(GOOGLE_SHEET_NAME)
         
         # Читаем все значения из указанной колонки
