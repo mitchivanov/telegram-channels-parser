@@ -1,0 +1,29 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Устанавливаем зависимости
+COPY requirements.txt ./
+RUN apt-get update && apt-get install -y gcc && \
+    pip install --no-cache-dir -r requirements.txt && \
+    apt-get remove -y gcc && apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/*
+
+# Копируем необходимые файлы
+COPY sync_google_sheets.py ./
+COPY config_loader.py ./
+
+# Скрипт для запуска синхронизации в цикле
+RUN echo '#!/bin/bash\n\
+set -e\n\
+echo "[SYNC-SCHEDULER] Starting Google Sheets sync scheduler..."\n\
+echo "[SYNC-SCHEDULER] Sync interval: ${SYNC_INTERVAL_MINUTES:-5} minutes"\n\
+while true; do\n\
+    echo "[SYNC-SCHEDULER] $(date) - Running sync..."\n\
+    python sync_google_sheets.py || echo "[SYNC-SCHEDULER] Sync failed, will retry later"\n\
+    echo "[SYNC-SCHEDULER] $(date) - Sync completed. Sleeping for ${SYNC_INTERVAL_MINUTES:-5} minutes..."\n\
+    sleep $((${SYNC_INTERVAL_MINUTES:-5} * 60))\n\
+done' > /app/sync_loop.sh && chmod +x /app/sync_loop.sh
+
+CMD ["/app/sync_loop.sh"]
+

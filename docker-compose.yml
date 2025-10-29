@@ -68,6 +68,32 @@ services:
     mem_limit: 1g
     logging: *default-logging
 
+  google-sheets-sync:
+    build:
+      context: ./parser
+      dockerfile: Dockerfile.sync
+    container_name: google-sheets-sync
+    volumes:
+      - parser_session:/app/session
+      - ./credentials.json:/app/credentials.json:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - PG_DSN=postgresql://postgres:postgres@db:5432/filter
+      - GOOGLE_SHEETS_ID=${GOOGLE_SHEETS_ID}
+      - GOOGLE_CREDENTIALS_FILE=/app/credentials.json
+      - GOOGLE_SHEET_NAME=${GOOGLE_SHEET_NAME:-Sheet1}
+      - GOOGLE_COLUMN=${GOOGLE_COLUMN:-1}
+      - SYNC_INTERVAL_MINUTES=${SYNC_INTERVAL_MINUTES:-5}
+      - TELEGRAM_CONFIG=/app/config/telegram_config.json
+    restart: unless-stopped
+    cpus: "0.5"
+    mem_limit: 512m
+    logging: *default-logging
+
   notifications-bot:
     build: ./notifications-bot
     container_name: notifications-bot

@@ -5,3 +5,5 @@ python-dotenv
 minio
 asyncpg
 cachetools>=5.0.0
+gspread>=5.12.0
+google-auth>=2.23.0

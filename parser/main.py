@@ -273,6 +273,9 @@ class ParserCore:
 
             # Запускаем периодическую очистку временных файлов (каждые 30 минут)
             asyncio.create_task(self._start_periodic_cleanup(interval_minutes=30))
+            
+            # Запускаем периодическую перезагрузку каналов из БД (каждые 5 минут)
+            asyncio.create_task(self._start_periodic_channel_reload(interval_minutes=5))
 
             if not self.channels:
                 self.logger.warning("No channels configured! Please check telegram_entities table in Postgres")
@@ -284,6 +287,22 @@ class ParserCore:
             self.logger.critical(f"Critical error during parser startup: {e}\n{traceback.format_exc()}")
             await self.stop()
             raise
+
+    async def _start_periodic_channel_reload(self, interval_minutes=5):
+        """Запускает периодическую перезагрузку списка каналов из БД"""
+        self.logger.info(f"[CHANNELS] Запуск периодической перезагрузки каналов каждые {interval_minutes} минут")
+        while self.is_running:
+            await asyncio.sleep(interval_minutes * 60)
+            try:
+                old_count = len(self.channels)
+                await self.load_channels_from_db()
+                new_count = len(self.channels)
+                if old_count != new_count:
+                    self.logger.info(f"[CHANNELS] Список каналов обновлен: {old_count} → {new_count}")
+                else:
+                    self.logger.debug(f"[CHANNELS] Список каналов не изменился ({new_count} каналов)")
+            except Exception as e:
+                self.logger.error(f"[CHANNELS] Ошибка при перезагрузке каналов: {e}")
 
     async def _start_periodic_cleanup(self, interval_minutes=30):
         """Запускает периодическую очистку временных файлов"""
