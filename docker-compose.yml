@@ -46,6 +46,33 @@ services:
     mem_limit: 512m
     logging: *default-logging
 
+  channel-sync:
+    build: ./channel-sync
+    container_name: channel-sync
+    volumes:
+      - parser_session:/app/session
+      - ./google_service_account.json:/app/config/google_service_account.json:ro
+    depends_on:
+      redis:
+        condition: service_started
+      db:
+        condition: service_started
+    env_file:
+      - .env
+    environment:
+      - TELEGRAM_API_ID=${TELEGRAM_API_ID}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH}
+      - GOOGLE_SHEETS_ID=${GOOGLE_SHEETS_ID}
+      - GOOGLE_SHEET_NAME=${GOOGLE_SHEET_NAME}
+      - GOOGLE_COLUMN=${GOOGLE_COLUMN}
+      - SYNC_INTERVAL_MINUTES=${SYNC_INTERVAL_MINUTES}
+      - REDIS_URL=redis://redis:6379/0
+      - PG_DSN=postgresql://postgres:postgres@db:5432/filter
+    restart: unless-stopped
+    cpus: "0.5"
+    mem_limit: 512m
+    logging: *default-logging
+
   parser:
     build: ./parser
     container_name: parser

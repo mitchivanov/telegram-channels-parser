@@ -8,14 +8,10 @@ RUN apt-get update && apt-get install -y gcc && pip install --no-cache-dir -r re
 # Создаем директорию для хранения состояния и устанавливаем права
 RUN mkdir -p /app/data && chmod 777 /app/data
 
-COPY updated_sources.txt ./
 COPY . .
 
 # Устанавливаем переменную среды для указания пути к файлу состояния
 ENV STATE_FILE=/app/data/state.json 
 
-# Добавляем entrypoint для импорта сущностей и запуска парсера
-COPY entrypoint.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh
-
-ENTRYPOINT ["/app/entrypoint.sh"] 
+# Запускаем парсер напрямую
+CMD ["python", "-u", "main.py"] 

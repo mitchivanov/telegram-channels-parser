@@ -172,3 +172,15 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Google Service Account
+google_service_account.json
+*service_account*.json
+
+# Telethon sessions
+*.session
+*.session-journal
+
+# Project specific
+temp/
+parser/temp/
