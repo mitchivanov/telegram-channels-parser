@@ -20,12 +20,22 @@ echo "[SYNC-SCHEDULER] Starting Google Sheets sync scheduler..."\n\
 echo "[SYNC-SCHEDULER] Sync interval: ${SYNC_INTERVAL_MINUTES:-5} minutes"\n\
 echo "[SYNC-SCHEDULER] Waiting 30 seconds for parser to authorize..."\n\
 sleep 30\n\
-echo "[SYNC-SCHEDULER] Checking if Telegram session exists..."\n\
-while [ ! -f "/app/session/${TELEGRAM_SESSION:-session}.session" ]; do\n\
-    echo "[SYNC-SCHEDULER] Telegram session not found. Waiting 10 more seconds..."\n\
+echo "[SYNC-SCHEDULER] Checking if source Telegram session exists..."\n\
+SOURCE_FILE="/app/session/${SOURCE_SESSION:-session_name}.session"\n\
+TARGET_FILE="/app/session/${TELEGRAM_SESSION:-sync_session}.session"\n\
+while [ ! -f "$SOURCE_FILE" ]; do\n\
+    echo "[SYNC-SCHEDULER] Source session not found: $SOURCE_FILE. Waiting 10 more seconds..."\n\
     sleep 10\n\
 done\n\
-echo "[SYNC-SCHEDULER] ✓ Telegram session found. Starting sync loop..."\n\
+echo "[SYNC-SCHEDULER] ✓ Source session found: $SOURCE_FILE"\n\
+if [ ! -f "$TARGET_FILE" ]; then\n\
+    echo "[SYNC-SCHEDULER] Target session not found. Copying from source..."\n\
+    cp "$SOURCE_FILE" "$TARGET_FILE"\n\
+    echo "[SYNC-SCHEDULER] ✓ Session copied: $TARGET_FILE"\n\
+else\n\
+    echo "[SYNC-SCHEDULER] ✓ Target session already exists: $TARGET_FILE"\n\
+fi\n\
+echo "[SYNC-SCHEDULER] ✓ Starting sync loop..."\n\
 while true; do\n\
     echo "[SYNC-SCHEDULER] $(date) - Running sync..."\n\
     python sync_google_sheets.py || echo "[SYNC-SCHEDULER] Sync failed, will retry later"\n\

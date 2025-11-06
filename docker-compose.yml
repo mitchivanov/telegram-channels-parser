@@ -91,6 +91,8 @@ services:
       - GOOGLE_COLUMN=${GOOGLE_COLUMN:-1}
       - SYNC_INTERVAL_MINUTES=${SYNC_INTERVAL_MINUTES:-5}
       - TELEGRAM_CONFIG=/app/config/telegram_config.json
+      - TELEGRAM_SESSION=sync_session
+      - SOURCE_SESSION=${TELEGRAM_SESSION:-session_name}
     restart: unless-stopped
     cpus: "0.5"
     mem_limit: 512m
