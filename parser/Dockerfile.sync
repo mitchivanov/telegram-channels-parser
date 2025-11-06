@@ -21,7 +21,7 @@ echo "[SYNC-SCHEDULER] Sync interval: ${SYNC_INTERVAL_MINUTES:-5} minutes"\n\
 echo "[SYNC-SCHEDULER] Waiting 30 seconds for parser to authorize..."\n\
 sleep 30\n\
 echo "[SYNC-SCHEDULER] Checking if Telegram session exists..."\n\
-while [ ! -f "/app/${TELEGRAM_SESSION:-session}.session" ]; do\n\
+while [ ! -f "/app/session/${TELEGRAM_SESSION:-session}.session" ]; do\n\
     echo "[SYNC-SCHEDULER] Telegram session not found. Waiting 10 more seconds..."\n\
     sleep 10\n\
 done\n\

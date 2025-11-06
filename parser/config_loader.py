@@ -10,7 +10,7 @@ def get_env_list(key):
 TELEGRAM_API_ID = int(os.environ["TELEGRAM_API_ID"])
 TELEGRAM_API_HASH = os.environ["TELEGRAM_API_HASH"]
 TELEGRAM_PHONE = os.environ["TELEGRAM_PHONE"]
-TELEGRAM_SESSION = os.environ.get("TELEGRAM_SESSION", "session")
+TELEGRAM_SESSION = f"session/{os.environ.get('TELEGRAM_SESSION', 'session')}"
 ADMIN_IDS = [int(x) for x in get_env_list("ADMIN_IDS")]
 CODE_BOT_TOKEN = os.environ["CODE_BOT_TOKEN"]
 REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
