@@ -12,10 +12,11 @@ CSV_PATH = "entities.csv"
 CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS telegram_entities (
     id BIGINT PRIMARY KEY,
-    username VARCHAR(128) UNIQUE,
+    username VARCHAR(128),
     entity_data BYTEA NOT NULL,
     updated_at TIMESTAMP DEFAULT now()
 );
+CREATE INDEX IF NOT EXISTS idx_telegram_entities_username ON telegram_entities(username);
 """
 
 async def import_entities():

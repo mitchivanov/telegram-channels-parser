@@ -358,20 +358,53 @@ async def sync_channels():
         conn = await asyncpg.connect(PG_DSN)
         logger.info("✓ PostgreSQL connected")
         
-        # 4. Синхронизируем каналы
+        # 4. Читаем существующие каналы из БД
+        existing_channels = await conn.fetch("SELECT username FROM telegram_entities")
+        existing_usernames = {row['username'].lower() for row in existing_channels}
+        logger.info(f"Found {len(existing_usernames)} channels in database")
+        
+        # 5. Находим разницу между Google Sheets и БД
+        sheets_usernames = {ch['username'].lower() for ch in channels_data}
+        new_channels = [ch for ch in channels_data if ch['username'].lower() not in existing_usernames]
+        removed_usernames = existing_usernames - sheets_usernames
+        
+        logger.info(f"Sync summary:")
+        logger.info(f"  📊 Google Sheets: {len(sheets_usernames)} channels")
+        logger.info(f"  💾 Database: {len(existing_usernames)} channels")
+        logger.info(f"  🆕 New to add: {len(new_channels)} channels")
+        logger.info(f"  🗑️ To remove: {len(removed_usernames)} channels")
+        logger.info(f"  ✅ No changes: {len(sheets_usernames & existing_usernames)} channels")
+        
+        # 6. Удаляем каналы, которых нет в Google Sheets
+        if removed_usernames:
+            for username in removed_usernames:
+                await conn.execute("DELETE FROM telegram_entities WHERE LOWER(username) = $1", username)
+                logger.info(f"🗑️ Removed from DB: {username}")
+        
+        # 7. Синхронизируем ТОЛЬКО новые каналы
         success_count = 0
         error_count = 0
         private_count = 0
         batch_updates = []  # Батч для Google Sheets
         BATCH_SIZE = 20  # Обновляем Google Sheets каждые 20 каналов
-        DELAY_BETWEEN_CHANNELS = 6  # 6 секунд = 10 каналов/минуту
+        DELAY_BETWEEN_CHANNELS = 12  # 12 секунд = 5 каналов/минуту (консервативно)
         
-        for i, channel_data in enumerate(channels_data, 1):
+        # Обрабатываем ТОЛЬКО новые каналы
+        if not new_channels:
+            logger.info("=" * 60)
+            logger.info("No new channels to sync. Skipping Telegram API requests.")
+            logger.info("=" * 60)
+        else:
+            logger.info("=" * 60)
+            logger.info(f"Processing {len(new_channels)} new channels...")
+            logger.info("=" * 60)
+        
+        for i, channel_data in enumerate(new_channels, 1):
             channel = channel_data['username']
             row = channel_data['row']
             
             try:
-                logger.info(f"[{i}/{len(channels_data)}] Processing: {channel} (row {row})")
+                logger.info(f"[{i}/{len(new_channels)}] Processing NEW: {channel} (row {row})")
                 
                 # Получаем entity
                 entity, error_type = await get_telegram_entity(client, channel)
@@ -463,12 +496,15 @@ async def sync_channels():
         if worksheet and batch_updates:
             batch_update_google_sheets(worksheet, batch_updates)
         
-        # 5. Статистика
+        # 8. Статистика
         logger.info("=" * 60)
         logger.info(f"Sync completed:")
-        logger.info(f"  🟢 Success: {success_count}")
-        logger.info(f"  🟡 Private: {private_count}")
+        logger.info(f"  🆕 New channels processed: {len(new_channels)}")
+        logger.info(f"  🗑️ Removed from DB: {len(removed_usernames)}")
+        logger.info(f"  🟢 Successfully added: {success_count}")
+        logger.info(f"  🟡 Private/Invalid: {private_count}")
         logger.info(f"  🔴 Errors: {error_count}")
+        logger.info(f"  💾 Total in DB now: {len(existing_usernames) + success_count - len(removed_usernames)}")
         logger.info("=" * 60)
         
         await conn.close()
