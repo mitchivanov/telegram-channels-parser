@@ -89,7 +89,7 @@ services:
       - GOOGLE_CREDENTIALS_FILE=/app/credentials.json
       - GOOGLE_SHEET_NAME=${GOOGLE_SHEET_NAME:-Sheet1}
       - GOOGLE_COLUMN=${GOOGLE_COLUMN:-1}
-      - SYNC_INTERVAL_MINUTES=${SYNC_INTERVAL_MINUTES:-5}
+      - SYNC_INTERVAL_MINUTES=${SYNC_INTERVAL_MINUTES:-30}
       - TELEGRAM_CONFIG=/app/config/telegram_config.json
       - TELEGRAM_SESSION=sync_session
       - SOURCE_SESSION=${TELEGRAM_SESSION:-session_name}
