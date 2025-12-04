@@ -11,10 +11,12 @@ import base64
 import os
 import logging
 import time
+import redis.asyncio as redis
+
 from datetime import datetime
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError, ChannelPrivateError, UserNotParticipantError, InviteHashInvalidError, InviteHashExpiredError
-from config_loader import TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_SESSION
+from config_loader import REDIS_URL, TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_SESSION
 
 # Google Sheets
 try:
@@ -330,6 +332,23 @@ async def sync_channels():
     # 1. Читаем каналы из Google Sheets
     worksheet, channels_data = get_channels_from_google_sheets()
     
+    if GSPREAD_AVAILABLE and GOOGLE_SHEETS_ID:
+        try:
+            scope = [
+            'https://spreadsheets.google.com/feeds',
+            'https://www.googleapis.com/auth/drive'
+            ]
+               
+            redis_client = redis.from_url(REDIS_URL)
+            creds = Credentials.from_service_account_file(GOOGLE_CREDENTIALS_FILE, scopes=scope)
+            client_gs = gspread.authorize(creds)
+            spreadsheet = client_gs.open_by_key(GOOGLE_SHEETS_ID)
+            
+            await sync_blacklist(spreadsheet, redis_client)
+            await redis_client.close()
+        except Exception as e:
+            logger.error(f"Failed to sync blacklist: {e}")
+    
     if not channels_data:
         logger.warning("No channels found in Google Sheets. Nothing to sync.")
         return
@@ -513,6 +532,40 @@ async def sync_channels():
         logger.error(f"Critical error during sync: {e}", exc_info=True)
     finally:
         await client.disconnect()
+
+
+async def sync_blacklist(spreadsheet, redis_client):
+    """Синхронизирует черный список фраз из Google Sheets в Redis"""
+    BLACKLIST_SHEET_NAME = os.environ.get("GOOGLE_BLACKLIST_SHEET_NAME", "Blacklist")
+    
+    try:
+        logger.info(f"Looking for blacklist sheet: '{BLACKLIST_SHEET_NAME}'")
+        try:
+            worksheet = spreadsheet.worksheet(BLACKLIST_SHEET_NAME)
+        except gspread.WorksheetNotFound:
+            logger.warning(f"Sheet '{BLACKLIST_SHEET_NAME}' not found. Skipping blacklist sync.")
+            return
+
+        # Читаем первую колонку
+        phrases = worksheet.col_values(1)
+        
+        # Очищаем: удаляем пустые строки, пробелы по краям, приводим к нижнему регистру
+        cleaned_phrases = [
+            p.strip().lower() 
+            for p in phrases 
+            if p.strip() and not p.startswith('#') and p.strip().lower() != "phrase"
+        ]
+        
+        if cleaned_phrases:
+            # Сохраняем в Redis как JSON список
+            import json
+            await redis_client.set("parser:blacklisted_phrases", json.dumps(cleaned_phrases))
+            logger.info(f"✅ Blacklist synced: {len(cleaned_phrases)} phrases updated in Redis")
+        else:
+            logger.info("Blacklist sheet is empty.")
+            
+    except Exception as e:
+        logger.error(f"Error syncing blacklist: {e}", exc_info=True)
 
 
 async def main():

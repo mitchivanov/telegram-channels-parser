@@ -93,6 +93,22 @@ class ParserCore:
         ]
         self.logger.info(f"Инициализирован черный список каналов: {self.blacklisted_channels}")
 
+
+    async def load_blacklisted_phrases(self):
+        """Загружаем черный список фраз (стоп-слов) из Redis"""
+        try:
+            phrases_json = await self.redis.get("parser:blacklisted_phrases")
+            if phrases_json:
+                phrases = json.loads(phrases_json)
+                self.exclude = phrases
+                self.logger.info(f"[BLACKLIST_PHRASES] Загружено {len(self.exclude)} стоп-слов из Redis")
+                self.logger.debug(f"Стоп-слова: {self.exclude}")
+            else:
+                self.logger.info("[BLACKLIST_PHRASES] Список стоп-слов в Redis пуст")
+        except Exception as e:
+            self.logger.error(f"[BLACKLIST_PHRASES] Ошибка при загрузке стоп-слов: {e}")
+
+    
     async def cleanup_old_temp_files(self, max_age_hours=6):
         """Удаляет временные файлы старше указанного возраста (в часах)"""
         self.logger.info(f"[CLEANUP] Запуск очистки временных файлов старше {max_age_hours} часов")
@@ -267,6 +283,9 @@ class ParserCore:
             await self.load_channels_from_db()
             # Загружаем черный список каналов из Redis
             await self.load_blacklisted_channels()
+            
+            await self.load_blacklisted_phrases()
+            
             self.is_running = True
             self.logger.info(f"Parser started with {len(self.channels)} channels configured (из базы)")
             self.logger.info(f"Черный список содержит {len(self.blacklisted_channels)} каналов")
@@ -301,6 +320,9 @@ class ParserCore:
                     self.logger.info(f"[CHANNELS] Список каналов обновлен: {old_count} → {new_count}")
                 else:
                     self.logger.debug(f"[CHANNELS] Список каналов не изменился ({new_count} каналов)")
+                
+                await self.load_blacklisted_phrases()
+                
             except Exception as e:
                 self.logger.error(f"[CHANNELS] Ошибка при перезагрузке каналов: {e}")
 
