@@ -33,6 +33,28 @@ CHANNEL_NAMES = {
     '-1001655410418': 'Бесплатный канал',
 }
 
+
+async def delayed_file_cleanup(redis, local_path, delay=300):
+    """
+    Фоновая задача: ждет указанное время, затем уменьшает счетчик файла.
+    Если счетчик становится <= 0, помечает файл на удаление.
+    """
+    await asyncio.sleep(delay)
+    try:
+        # Уменьшаем счетчик обратно
+        file_count = await redis.decr(f"file:{local_path}")
+        logger.info(f"[DELAYED_CLEANUP] Отложенный декремент для {local_path}. Текущий счетчик: {file_count}")
+        
+        # Если файл больше нигде не используется, помечаем на удаление
+        if file_count <= 0:
+            await redis.set(f"delete_after:{local_path}", 1, ex=300)
+            logger.info(f"[DELAYED_CLEANUP] Файл {local_path} больше не используется, помечен на удаление.")
+    except Exception as e:
+        logger.error(f"[DELAYED_CLEANUP] Ошибка при обработке {local_path}: {e}")
+
+
+
+
 def build_channel_topics():
     topics = {}
     for k, v in os.environ.items():
@@ -165,15 +187,21 @@ async def approved_queue_worker(redis, producer):
                             if mod_count <= 0:
                                 await redis.delete(f"moderation:{local_path}")
                                 logger.info(f"[MODERATION_COUNTER] Счетчик модерации для {local_path} удален (достиг 0)")
-                                
-                                # Проверяем, есть ли еще счетчик file:*
-                                file_count = await redis.get(f"file:{local_path}")
-                                
-                                # Если нет счетчика file:* (или он 0), помечаем файл на удаление
-                                if not file_count or int(file_count) <= 0:
-                                    # Помечаем на удаление через 5 минут
-                                    await redis.set(f'delete_after:{local_path}', 1, ex=300)
-                                    logger.info(f"[MODERATION_COUNTER] Файл {local_path} помечен на удаление через 5 минут (оба счетчика 0)")
+                               
+                                 
+                            #    # Проверяем, есть ли еще счетчик file:*
+                            #    file_count = await redis.get(f"file:{local_path}")
+                            #    
+                            #    # Если нет счетчика file:* (или он 0), помечаем файл на удаление
+                            #    if not file_count or int(file_count) <= 0:
+                            #        # Помечаем на удаление через 5 минут
+                            #        await redis.set(f'delete_after:{local_path}', 1, ex=300)
+                            #        logger.info(f"[MODERATION_COUNTER] Файл {local_path} помечен на удаление через 5 минут (оба счетчика 0)")
+                            
+                            await redis.incr(f"file:{local_path}")
+                            asyncio.create_task(delayed_file_cleanup(redis, local_path, delay=300)) 
+                            logger.info(f"[APPROVED_QUEUE] Файл {local_path} защищен от удаления на 5 минут.")
+                             
                         except Exception as e:
                             logger.error(f"[MODERATION_COUNTER] Ошибка при декременте счетчика модерации для {local_path}: {e}")
                 
