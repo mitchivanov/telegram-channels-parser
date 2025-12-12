@@ -359,7 +359,17 @@ async def kafka_filter_worker():
                         elif not skip:
                             logger.warning(f"[KAFKA] Не найден топик для канала {target_channel}")
                     num_channels = len(send_channels)
-                    # Обновляем счетчики для local_path
+                    
+                    # --- ### FIX START: Учитываем модерацию при подсчете ссылок на файл ### ---
+                    
+                    # Если пост ушел на модерацию, считаем это как +1 использование файла.
+                    # Это предотвратит удаление файла первым каналом (refcount не упадет до 0).
+                    if sent_to_moderation:
+                        num_channels += 1
+                        logger.info("[FILTER] Увеличен счетчик каналов (+1) из-за отправки на модерацию")
+                        
+                    # --- ### FIX END ### ---
+                    
                     if num_channels > 0 and media_files_to_count:
                         for f in media_files_to_count:
                             await redis.incrby(f"file:{f}", num_channels)
