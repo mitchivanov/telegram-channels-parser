@@ -100,9 +100,8 @@ async def add_to_moderation_queue_redis(redis, post, target_channel):
                 logger.info(f"[MODERATION_COUNTER] Увеличен счетчик модерации для {local_path}")
                 # Устанавливаем TTL только если ключ новый (не имеет TTL)
                 ttl = await redis.ttl(f"moderation:{local_path}")
-                if ttl == -1:  # Ключ существует, но без TTL
-                    await redis.expire(f"moderation:{local_path}", MODERATION_TTL)
-                    logger.info(f"[MODERATION_COUNTER] Установлен TTL {MODERATION_TTL/60} минут для счетчика модерации {local_path}")
+                await redis.expire(f"moderation:{local_path}", MODERATION_TTL)
+                logger.info(f"[MODERATION_COUNTER] Установлен TTL {MODERATION_TTL/60} минут для счетчика модерации {local_path}")
             except Exception as e:
                 logger.error(f"[MODERATION_COUNTER] Ошибка при инкременте счетчика модерации для {local_path}: {e}")
             media_out.append(m)
@@ -196,11 +195,11 @@ async def approved_queue_worker(redis, producer):
                             #    if not file_count or int(file_count) <= 0:
                             #        # Помечаем на удаление через 5 минут
                             #        await redis.set(f'delete_after:{local_path}', 1, ex=300)
-                            #        logger.info(f"[MODERATION_COUNTER] Файл {local_path} помечен на удаление через 5 минут (оба счетчика 0)")
+                            #        logger.info(f"[MODERATION_COUNTER] Файл {local_path} помечен на удаление через 60 минут (оба счетчика 0)")
                             
                             await redis.incr(f"file:{local_path}")
-                            asyncio.create_task(delayed_file_cleanup(redis, local_path, delay=300)) 
-                            logger.info(f"[APPROVED_QUEUE] Файл {local_path} защищен от удаления на 5 минут.")
+                            asyncio.create_task(delayed_file_cleanup(redis, local_path, delay=3600)) 
+                            logger.info(f"[APPROVED_QUEUE] Файл {local_path} защищен от удаления на 60 минут.")
                              
                         except Exception as e:
                             logger.error(f"[MODERATION_COUNTER] Ошибка при декременте счетчика модерации для {local_path}: {e}")
