@@ -1,3 +1,4 @@
+# parser/import_entities_from_csv.py
 import asyncpg
 import csv
 import base64

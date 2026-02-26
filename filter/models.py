@@ -1,3 +1,4 @@
+# filter/models.py
 from sqlalchemy import Column, Integer, String, Boolean, Text, Float
 from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
 from sqlalchemy.ext.asyncio import AsyncAttrs

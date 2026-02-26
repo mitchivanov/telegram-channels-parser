@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+# parser/sync_google_sheets.py
 """
 Скрипт синхронизации каналов из Google Sheets в PostgreSQL.
 Запускается периодически (например, каждые 5 минут) для обновления списка каналов.

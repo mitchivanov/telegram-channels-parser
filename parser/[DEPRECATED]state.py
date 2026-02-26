@@ -1,3 +1,4 @@
+# parser/[DEPRECATED]state.py
 import json
 import os
 import logging

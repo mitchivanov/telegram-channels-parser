@@ -1,3 +1,4 @@
+# filter-bot/main.py
 import os
 import asyncio
 import json
@@ -49,7 +50,7 @@ async def send_post_for_moderation(post: dict, message_id: str):
     if channel:
         # Определяем тип канала по ID
         channel_type = "Неизвестный"
-        if channel == "-1002503014558":
+        if channel == "-1003864565942":
             channel_type = "Премиум"
         elif channel == "-1002687437494":
             channel_type = "Базовый"

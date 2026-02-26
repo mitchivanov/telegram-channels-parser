@@ -1,3 +1,4 @@
+# parser/floodwait_manager.py
 import asyncio
 from datetime import datetime, timedelta
 import logging

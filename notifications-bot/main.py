@@ -1,3 +1,4 @@
+# notifications-bot/main.py
 import asyncio
 import os
 import logging

@@ -1,3 +1,4 @@
+# filter/kafka_worker.py
 import asyncio
 import os
 import json
@@ -28,7 +29,7 @@ MODERATION_TTL = int(os.environ.get("MODERATION_TTL_MINUTES", "60")) * 60
 
 # Словарь соответствия ID каналов их названиям
 CHANNEL_NAMES = {
-    '-1002503014558': 'Премиум канал',
+    '-1003864565942': 'Премиум канал',
     '-1002687437494': 'Базовый канал',
     '-1001655410418': 'Бесплатный канал',
 }

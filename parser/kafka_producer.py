@@ -1,3 +1,4 @@
+# parser/kafka_producer.py
 from aiokafka import AIOKafkaProducer
 import asyncio
 import json

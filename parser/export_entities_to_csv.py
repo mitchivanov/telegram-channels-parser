@@ -1,3 +1,4 @@
+# parser/export_entities_to_csv.py
 import csv
 import pickle
 import base64
